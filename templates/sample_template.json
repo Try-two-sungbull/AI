@@ -1,0 +1,28 @@
+{
+  "template_id": "template_001",
+  "template_type": "적격심사",
+  "name": "일반 용역 적격심사 공고문",
+  "description": "일반적인 용역 계약의 적격심사 방식 입찰 공고문 템플릿",
+  "content": "# {project_name}\n\n## 입찰 공고\n\n### 1. 사업 개요\n- 사업명: {project_name}\n- 추정 금액: {estimated_amount}원\n- 계약 기간: {contract_period}\n- 조달 유형: {procurement_type}\n\n### 2. 입찰 방식\n- 낙찰 방식: {determination_method}\n- 입찰 방법: 전자입찰\n- 계약 방법: 총액계약\n\n### 3. 참가 자격\n{qualification_notes}\n\n#### 기본 자격요건\n- 사업자등록증을 보유한 업체\n- 부가가치세법에 따른 사업자등록을 한 자\n- 국세 및 지방세 완납 증명서 제출 가능자\n\n#### 기술 자격요건\n- 관련 분야 경력 3년 이상\n- 유사 용역 수행 실적 보유\n\n### 4. 제출 서류\n\n#### 필수 서류\n1. 사업자등록증 사본\n2. 기술 제안서\n3. 견적서\n4. 국세 및 지방세 완납 증명서\n5. 4대 보험 가입 확인서\n\n#### 기술 제안서 포함 내용\n- 사업 수행 계획\n- 투입 인력 현황\n- 유사 실적 증빙\n- 품질 관리 계획\n\n### 5. 입찰 일정\n- 공고일: {announcement_date}\n- 현장 설명회: {briefing_date}\n- 입찰 마감일: {deadline}\n- 개찰일: {opening_date}\n- 낙찰자 발표: {announcement_result_date}\n\n### 6. 적격심사 기준\n\n#### 평가 항목 (총 100점)\n1. 사업 수행 계획 (30점)\n   - 사업 이해도 및 추진 전략\n   - 단계별 추진 일정의 타당성\n\n2. 기술 능력 (40점)\n   - 유사 용역 수행 실적\n   - 투입 인력의 전문성\n   - 기술 제안의 우수성\n\n3. 가격 (30점)\n   - 예정가격 대비 입찰가격 비율\n\n#### 적격심사 통과 기준\n- 총점 70점 이상\n- 각 평가항목별 40% 이상 득점\n\n### 7. 낙찰자 결정 방법\n- 적격심사를 통과한 업체 중 최저가 입찰 업체를 낙찰자로 결정\n- 적격심사 통과 업체가 없는 경우 재입찰 실시\n\n### 8. 계약 조건\n\n#### 계약 이행 보증\n- 계약 금액의 10% 이행보증금 예치\n\n#### 대금 지급 조건\n- 선급금: 계약금액의 30% (계약 체결 후)\n- 중도금: 계약금액의 40% (사업 50% 진행 시)\n- 잔금: 계약금액의 30% (사업 완료 및 검수 후)\n\n#### 지체상금\n- 계약 기간을 지체할 경우 지체일수에 대하여 계약금액의 0.1%를 지체상금으로 부과\n\n### 9. 유의사항\n\n#### 입찰 무효\n다음 각 호의 어느 하나에 해당하는 경우 입찰 무효 처리:\n1. 입찰 참가자격이 없는 자가 입찰한 경우\n2. 제출 서류가 허위인 경우\n3. 동일 입찰 건에 2개 이상의 입찰서를 제출한 경우\n4. 예정가격을 초과하여 입찰한 경우\n\n#### 낙찰자 결격 사유\n다음 각 호의 어느 하나에 해당하는 경우 낙찰 무효:\n1. 부정한 방법으로 낙찰된 경우\n2. 낙찰 후 계약 체결 거부 시\n3. 제출 서류의 허위 사실 발견 시\n\n### 10. 문의처\n\n#### 사업 담당 부서\n- 부서명: 디지털혁신과\n- 담당자: 홍길동 주무관\n- 전화: 02-1234-5678\n- 이메일: bidding@example.go.kr\n- 주소: 서울특별시 종로구 세종대로 209\n\n#### 입찰 시스템 문의\n- 나라장터 고객센터: 1588-0800\n- 운영시간: 평일 09:00 ~ 18:00\n\n---\n\n**본 공고는 국가계약법 및 동법 시행령, 시행규칙에 따라 작성되었습니다.**\n\n**발주기관: {organization}**\n**공고일자: {announcement_date}**",
+  "placeholders": [
+    "project_name",
+    "estimated_amount",
+    "contract_period",
+    "procurement_type",
+    "determination_method",
+    "qualification_notes",
+    "announcement_date",
+    "briefing_date",
+    "deadline",
+    "opening_date",
+    "announcement_result_date",
+    "organization"
+  ],
+  "metadata": {
+    "version": "1.0",
+    "created_at": "2024-01-01",
+    "applicable_law": "국가계약법 제10조, 제27조",
+    "contract_type": "용역",
+    "bid_method": "적격심사"
+  }
+}

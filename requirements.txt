@@ -1,0 +1,38 @@
+# FastAPI Core
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# AI Agent Framework
+crewai==0.28.0
+crewai-tools==0.2.6
+
+# LLM Integration
+openai>=1.0.0
+langchain>=0.1.10,<0.2.0
+langchain-openai>=0.0.5
+
+# Document Parsing
+pypdf>=3.0.0
+python-docx>=1.1.0
+python-multipart>=0.0.9
+olefile>=0.46  # HWP 파일 파싱
+chardet>=5.0.0  # 인코딩 자동 감지
+
+# Database & Storage (Optional)
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-dotenv>=1.0.0
+
+# HTTP Client
+httpx>=0.26.0
+aiofiles>=23.0.0
+
+# Utilities
+python-dateutil>=2.8.0
+PyYAML>=6.0
