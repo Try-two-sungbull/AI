@@ -2,10 +2,12 @@
 Agent API Endpoints
 
 4개의 엔드포인트:
-1. POST /api/v1/agent/upload - 문서 업로드 + 즉시 Agent 실행 (원스톱)
+1. POST /api/v1/agent/upload - 문서 업로드만 받아서 자동 처리 (원스톱)
 2. POST /api/v1/agent/run - Agent 재실행 (피드백 반영 시)
 3. GET /api/v1/agent/state/{id} - 현재 상태 조회
 4. POST /api/v1/agent/feedback - 사용자 피드백 반영
+
+템플릿과 법령 참조는 시스템이 자동으로 처리합니다.
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
@@ -26,17 +28,16 @@ agent_sessions: Dict[str, AgentState] = {}
 
 @router.post("/upload")
 async def upload_document(
-    file: UploadFile = File(...),
-    template_id: Optional[str] = None,
-    user_prompt: Optional[str] = ""
+    file: UploadFile = File(...)
 ):
     """
     문서 업로드 + 즉시 Agent 실행 (통합)
 
-    - 발주계획서 업로드 (PDF, DOCX, HWP)
+    - 발주계획서 업로드 (PDF, DOCX, HWP)만 받음
     - 텍스트 추출
     - AgentState 생성
     - 즉시 Agent Loop 실행
+    - 템플릿과 법령은 시스템이 자동으로 처리
     - 최종 결과 반환
     """
     # 세션 ID 생성
@@ -52,8 +53,7 @@ async def upload_document(
         state = AgentState(
             session_id=session_id,
             step="extract",
-            raw_text=raw_text,
-            selected_template_id=template_id
+            raw_text=raw_text
         )
 
         # 저장
@@ -62,23 +62,21 @@ async def upload_document(
         # 즉시 Agent 실행
         crew_service = BiddingDocumentCrew(state)
 
-        # 템플릿 및 법령 참조
-        template = get_default_template()
+        # 법령 참조는 시스템이 자동으로 선택
         law_references = get_default_law_references()
 
-        # 전체 파이프라인 실행
-        result = crew_service.run_full_pipeline(
+        # 전체 파이프라인 실행 - 완성된 문서 String 반환
+        final_document = crew_service.run_full_pipeline(
             document_text=raw_text,
-            template=template,
             law_references=law_references,
-            user_prompt=user_prompt or ""
+            max_iterations=10  # 최대 10회 반복
         )
 
         return {
             "session_id": session_id,
             "file_name": file.filename,
             "status": "completed",
-            "result": result,
+            "document": final_document,  # 완성된 문서 String
             "state": {
                 "step": state.step,
                 "retry_count": state.retry_count,
@@ -97,7 +95,6 @@ async def upload_document(
 @router.post("/run")
 async def run_agent(
     session_id: str,
-    template: Optional[str] = None,
     law_references: Optional[str] = None,
     user_prompt: Optional[str] = ""
 ):
@@ -122,26 +119,22 @@ async def run_agent(
         # Crew 생성
         crew_service = BiddingDocumentCrew(state)
 
-        # 템플릿 기본값
-        if not template:
-            template = get_default_template()
-
         # 법령 참조 기본값
         if not law_references:
             law_references = get_default_law_references()
 
-        # 전체 파이프라인 실행
-        result = crew_service.run_full_pipeline(
+        # 전체 파이프라인 실행 - 완성된 문서 반환 (PDF 샘플 기반)
+        final_document = crew_service.run_full_pipeline(
             document_text=state.raw_text,
-            template=template,
             law_references=law_references,
-            user_prompt=user_prompt or ""
+            max_iterations=10
         )
 
         # 결과 반환
         return {
             "session_id": session_id,
-            "result": result,
+            "status": "completed",
+            "document": final_document,  # 완성된 문서 String
             "state": {
                 "step": state.step,
                 "retry_count": state.retry_count,
@@ -221,39 +214,6 @@ async def submit_feedback(feedback: UserFeedback):
 
 
 # 헬퍼 함수들
-
-def get_default_template() -> str:
-    """기본 템플릿 반환"""
-    return """
-# {project_name}
-
-## 입찰 공고
-
-### 1. 사업 개요
-- 사업명: {project_name}
-- 추정 금액: {estimated_amount}원
-- 계약 기간: {contract_period}
-
-### 2. 입찰 방식
-- 낙찰 방식: {determination_method}
-
-### 3. 참가 자격
-{qualification_notes}
-
-### 4. 제출 서류
-- 사업자등록증
-- 기술 제안서
-- 견적서
-
-### 5. 입찰 일정
-- 공고일: {announcement_date}
-- 입찰 마감일: {deadline}
-- 개찰일: {opening_date}
-
-### 6. 문의처
-발주기관 담당부서
-"""
-
 
 def get_default_law_references() -> str:
     """기본 법령 참조 반환"""

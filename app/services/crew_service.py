@@ -82,14 +82,54 @@ class BiddingDocumentCrew:
 
         result = crew.kickoff()
 
+        # 디버깅: Agent 원본 결과 출력
+        print("\n" + "="*80)
+        print("🔍 Classifier Agent 원본 결과:")
+        print("="*80)
+        print(str(result))
+        print("="*80 + "\n")
+
+        # JSON 코드블록 제거 (```json ... ``` 형식 처리)
+        result_str = str(result).strip()
+        if result_str.startswith("```json"):
+            result_str = result_str[7:]  # ```json 제거
+        if result_str.startswith("```"):
+            result_str = result_str[3:]  # ``` 제거
+        if result_str.endswith("```"):
+            result_str = result_str[:-3]  # 끝 ``` 제거
+        result_str = result_str.strip()
+
+        # JSON 주석 제거 (// 주석)
+        import re
+        result_str = re.sub(r'//.*?(?=\n|$)', '', result_str)
+
         try:
-            classification = json.loads(str(result))
-        except json.JSONDecodeError:
+            raw_classification = json.loads(result_str)
+
+            print("✅ JSON 파싱 성공!")
+            print(f"원본 구조: {json.dumps(raw_classification, ensure_ascii=False, indent=2)}")
+
+            # Task에서 반환하는 복잡한 JSON 구조를 단순화
             classification = {
-                "recommended_type": "unknown",
-                "confidence": 0.0,
-                "reason": str(result),
-                "alternative_types": []
+                "recommended_type": raw_classification.get("classification", {}).get("contract_method", "unknown"),
+                "reason": raw_classification.get("constraints", {}).get("reason", ""),
+                "purchase_type": raw_classification.get("classification", {}).get("purchase_type", ""),
+                "applied_annex": raw_classification.get("constraints", {}).get("applied_annex", ""),
+                "sme_restriction": raw_classification.get("constraints", {}).get("sme_restriction", ""),
+                "raw": raw_classification  # 원본 데이터도 보관
+            }
+
+            print(f"\n✅ 변환된 classification:")
+            print(f"  - recommended_type: {classification['recommended_type']}")
+            print(f"  - reason: {classification['reason']}")
+
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON 파싱 실패: {e}")
+            print(f"원본 결과 (처음 500자):\n{str(result)[:500]}")
+            classification = {
+                "recommended_type": "적격심사",  # 기본값으로 적격심사 사용
+                "reason": "JSON 파싱 실패로 기본값 사용",
+                "raw_text": str(result)
             }
 
         # AgentState 업데이트
@@ -101,20 +141,46 @@ class BiddingDocumentCrew:
     def run_generation(
         self,
         extracted_data: Dict[str, Any],
-        template: str,
-        user_prompt: str = ""
+        template_id: str = None,
+        announcement_type: str = None
     ) -> str:
         """
-        STEP 4: 공고문 초안 생성
+        STEP 4: 공고문 초안 생성 (Agent가 PDF 샘플 학습 후 합성)
+
+        1. Few-Shot PDF 샘플 로드
+        2. Agent가 샘플들에서 구조 패턴 학습
+        3. 추출된 키워드로 새 문서 합성
+
+        Args:
+            extracted_data: 추출된 키워드
+            template_id: (사용 안 함, 호환성 유지용)
+            announcement_type: 공고 유형 (샘플 선택용)
 
         Returns:
             생성된 공고문 문자열
         """
+        from app.tools.example_loader import get_example_loader
+
+        # 1. PDF 샘플 로드 (여러 개)
+        example_loader = get_example_loader()
+
+        # announcement_type이 없으면 기본값으로 적격심사 사용
+        if not announcement_type:
+            announcement_type = "적격심사"
+
+        few_shot_examples = example_loader.load_examples(
+            announcement_type,
+            max_samples=3  # 3개의 샘플로 학습
+        )
+
+        if not few_shot_examples:
+            raise ValueError(f"공고 유형 '{announcement_type}'에 대한 샘플을 찾을 수 없습니다")
+
+        # 2. Agent가 샘플 학습 + 키워드로 합성
         task = create_generation_task(
             self.generator,
             extracted_data,
-            template,
-            user_prompt
+            few_shot_examples  # List[str] of PDF contents
         )
 
         crew = Crew(
@@ -211,103 +277,64 @@ class BiddingDocumentCrew:
     def run_full_pipeline(
         self,
         document_text: str,
-        template: str,
-        law_references: str,
-        user_prompt: str = ""
-    ) -> Dict[str, Any]:
+        law_references: str = "",
+        max_iterations: int = 10
+    ) -> str:
         """
-        전체 파이프라인 실행
+        전체 파이프라인 실행 - 완벽한 문서가 나올 때까지 반복
 
-        Agent Decision Policy:
-        - issues.length == 0 → complete
-        - retry_count < max_retry → revise
-        - else → escalate to human
+        Args:
+            document_text: 원본 문서 텍스트
+            law_references: 법령 참조 텍스트
+            max_iterations: 최대 반복 횟수 (무한 루프 방지)
 
         Returns:
-            최종 결과 딕셔너리
+            완성된 공고문 문자열 (String)
         """
-        # STEP 2: 추출
+        # STEP 1: 추출
         extracted_data = self.run_extraction(document_text)
 
-        # STEP 3: 분류
+        # STEP 2: 분류
         classification = self.run_classification(extracted_data)
 
-        # 신뢰도 확인 (0.6 미만이면 사용자 확인 필요)
-        if classification.get("confidence", 0) < 0.6:
-            return {
-                "status": "needs_user_confirmation",
-                "message": "분류 신뢰도가 낮습니다. 사용자 확인이 필요합니다.",
-                "extracted_data": extracted_data,
-                "classification": classification
-            }
+        # 분류 결과 출력
+        print(f"📋 분류 결과: {classification.get('recommended_type')}")
 
-        # STEP 4: 생성
-        generated_document = self.run_generation(
+        # STEP 3: 생성 (PDF 샘플 기반)
+        announcement_type = classification.get("recommended_type")
+        current_document = self.run_generation(
             extracted_data,
-            template,
-            user_prompt
+            announcement_type=announcement_type
         )
 
-        # STEP 5: 검증
-        validation_result = self.run_validation(
-            generated_document,
-            law_references
-        )
+        # STEP 4: 검증 및 반복 (완벽해질 때까지)
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
 
-        # Agent Decision Policy
-        if len(validation_result.get("issues", [])) == 0:
-            # 이슈 없음 → 완료
-            self.state.transition_to("complete")
-            return {
-                "status": "complete",
-                "extracted_data": extracted_data,
-                "classification": classification,
-                "final_document": generated_document,
-                "validation": validation_result
-            }
-
-        elif self.state.can_retry():
-            # 재시도 가능 → 수정
-            self.state.transition_to("revise")
-            revised_document = self.run_revision(
-                generated_document,
-                validation_result.get("issues", [])
-            )
-
-            # 수정 후 재검증
-            revalidation_result = self.run_validation(
-                revised_document,
+            # 검증
+            validation_result = self.run_validation(
+                current_document,
                 law_references
             )
 
-            if len(revalidation_result.get("issues", [])) == 0:
-                self.state.transition_to("complete")
-                return {
-                    "status": "complete",
-                    "extracted_data": extracted_data,
-                    "classification": classification,
-                    "final_document": revised_document,
-                    "validation": revalidation_result,
-                    "revision_count": self.state.retry_count
-                }
-            else:
-                return {
-                    "status": "revised_with_remaining_issues",
-                    "extracted_data": extracted_data,
-                    "classification": classification,
-                    "final_document": revised_document,
-                    "validation": revalidation_result,
-                    "revision_count": self.state.retry_count
-                }
+            issues = validation_result.get("issues", [])
 
-        else:
-            # 재시도 한계 → 사람 개입 필요
-            return {
-                "status": "needs_human_intervention",
-                "message": f"최대 재시도 횟수({self.state.max_retry})를 초과했습니다.",
-                "extracted_data": extracted_data,
-                "classification": classification,
-                "final_document": generated_document,
-                "validation": validation_result,
-                "revision_count": self.state.retry_count
-            }
+            # 이슈 없음 → 완료!
+            if len(issues) == 0:
+                self.state.transition_to("complete")
+                print(f"✅ 검증 완료! (반복: {iteration}회)")
+                return current_document
+
+            # 이슈 있음 → 수정 후 재시도
+            print(f"🔄 이슈 {len(issues)}개 발견. 수정 중... (반복: {iteration}/{max_iterations})")
+
+            current_document = self.run_revision(
+                current_document,
+                issues
+            )
+
+        # 최대 반복 도달 - 최선의 결과 반환
+        print(f"⚠️ 최대 반복 횟수({max_iterations})에 도달했습니다. 현재 버전을 반환합니다.")
+        self.state.transition_to("complete")
+        return current_document
