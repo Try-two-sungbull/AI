@@ -35,6 +35,12 @@ def create_extraction_task(agent, document_text: str) -> Task:
         9. determination_method: 낙찰 방식 추천 (추천만, 확정 아님)
         10. detail_item_codes: 세부 품목 번호 목록 (있을 경우)
         11. industry_codes: 업종코드 목록 (있을 경우)
+            ⚠️ 중요: 업종코드는 숫자로 된 코드 번호입니다 (예: "1235", "6780").
+            - "업종코드"라는 단어 뒤에 오는 숫자를 찾으세요
+            - 업종명(예: "고압가스판매업")이 아닌 실제 코드 번호를 추출하세요
+            - 문서에서 "업종코드: 1245" 또는 "업종코드 1345" 형태로 표기된 숫자를 찾으세요
+            - 여러 업종코드가 있으면 모두 배열로 추출하세요
+            - 업종코드 번호를 찾을 수 없으면 null로 설정하세요 (업종명을 넣지 마세요)
         12. is_joint_contract: 공동계약 여부 (true/false)
         13. has_region_restriction: 지역제한 여부 (true/false)
         14. restricted_region: 제한 지역 (지역제한이 있는 경우)
@@ -44,6 +50,96 @@ def create_extraction_task(agent, document_text: str) -> Task:
         """,
         agent=agent,
         expected_output="JSON 형식의 추출된 데이터 (ExtractedData 스키마 준수)"
+    )
+
+
+def create_cross_reflection_task(agent, claude_result: Dict[str, Any], openai_result: Dict[str, Any], document_text: str) -> Task:
+    """
+    상호 리플렉션 Task: Claude와 OpenAI 추출 결과를 비교하고 통합
+    
+    두 Agent의 추출 결과를 비교하여:
+    1. 누락된 정보 보완
+    2. 불일치하는 정보 검증
+    3. 최종 통합된 결과 생성
+    """
+    import json
+    
+    return Task(
+        description=f"""
+        당신은 두 개의 추출 결과를 비교하고 통합하는 전문가입니다.
+        
+        ## 원본 문서
+        {document_text[:2000]}  # 문서 일부만 표시
+        
+        ## Claude 추출 결과
+        ```json
+        {json.dumps(claude_result, ensure_ascii=False, indent=2)}
+        ```
+        
+        ## OpenAI 추출 결과
+        ```json
+        {json.dumps(openai_result, ensure_ascii=False, indent=2)}
+        ```
+        
+        ## 작업 목표
+        
+        1. **누락 정보 보완**: Claude 결과에 null이거나 비어있는 필드를 OpenAI 결과로 보완
+        2. **불일치 검증**: 두 결과가 다른 경우, 원본 문서를 참고하여 더 정확한 값을 선택
+        3. **통합 결과 생성**: 최종적으로 가장 완전하고 정확한 ExtractedData JSON 생성
+        
+        ## 비교 우선순위
+        
+        - **금액 정보 (estimated_amount, total_budget_vat)**: 
+          - 둘 다 있으면 더 큰 값 또는 더 구체적인 값 선택
+          - 하나만 있으면 그것 사용
+        - **기본 정보 (project_name, item_name)**: 
+          - 더 구체적이고 완전한 값 선택
+        - **기간 정보 (contract_period, delivery_deadline_days)**:
+          - 더 명확하고 구체적인 값 선택
+        - **조달 정보 (procurement_type, procurement_method_raw)**:
+          - 원본 문서와 더 일치하는 값 선택
+        - **자격 요건 (qualification_notes, industry_codes 등)**:
+          - 더 상세하고 완전한 정보 선택
+        - **업종코드 (industry_codes)**:
+          - ⚠️ 중요: 업종코드는 숫자로 된 코드 번호입니다 (예: "12345", "67890")
+          - 업종명(예: "고압가스판매업")이 아닌 실제 숫자 코드를 추출하세요
+          - 원본 문서에서 "업종코드: 12345" 또는 "업종코드 12345" 형태의 숫자를 찾으세요
+          - 두 결과 중 숫자 코드가 있는 것을 우선 선택하세요
+          - 둘 다 업종명만 있으면 원본 문서를 다시 확인하여 숫자 코드를 찾으세요
+          - 숫자 코드를 찾을 수 없으면 null로 설정하세요 (업종명을 넣지 마세요)
+        
+        ## 출력 형식
+        
+        다음 JSON 형식으로 최종 통합 결과를 출력하세요:
+        
+        ```json
+        {{
+            "project_name": "...",
+            "item_name": "...",
+            "estimated_amount": ...,
+            "total_budget_vat": ...,
+            "contract_period": "...",
+            "delivery_deadline_days": ...,
+            "procurement_type": "...",
+            "procurement_method_raw": "...",
+            "determination_method": "...",
+            "detail_item_codes": [...],
+            "industry_codes": [...],  # 숫자 코드만 (예: ["12345", "67890"]), 업종명이 아닌 코드 번호
+            "is_joint_contract": true/false,
+            "has_region_restriction": true/false,
+            "restricted_region": "...",
+            "qualification_notes": "...",
+            "qualification": {{...}}
+        }}
+        ```
+        
+        **중요**: 
+        - 모든 필드를 가능한 한 채우세요
+        - null 값은 최소화하세요
+        - 두 결과를 단순 병합하지 말고, 원본 문서를 참고하여 검증하세요
+        """,
+        agent=agent,
+        expected_output="통합된 ExtractedData JSON (모든 필드가 가능한 한 채워진 완전한 결과)"
     )
 
 

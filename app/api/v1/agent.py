@@ -821,7 +821,7 @@ async def classify_only(
         
         # Extractor + Classifier 실행
         crew_service = BiddingDocumentCrew(state)
-        extracted_data = crew_service.run_extraction(raw_text)
+        extracted_data = crew_service.run_extraction(raw_text, use_reflection=True)  # classify에서 리플렉션 활성화
         classification = crew_service.run_classification(extracted_data)
         
         return {
@@ -837,9 +837,23 @@ async def classify_only(
             }
         }
     except Exception as e:
+        import traceback
+        error_detail = str(e)
+        error_traceback = traceback.format_exc()
+        
+        print(f"\n❌ /classify 엔드포인트 에러 발생:")
+        print(f"   에러 메시지: {error_detail}")
+        print(f"   상세 스택 트레이스:")
+        print(error_traceback)
+        
         if session_id in agent_sessions:
-            agent_sessions[session_id].add_error(str(e))
-        raise HTTPException(status_code=400, detail=f"분류 실패: {str(e)}")
+            agent_sessions[session_id].add_error(error_detail)
+        
+        # 더 자세한 에러 정보 제공
+        raise HTTPException(
+            status_code=400, 
+            detail=f"분류 실패: {error_detail}\n\n스택 트레이스:\n{error_traceback}"
+        )
 
 
 @router.post("/convert-html")

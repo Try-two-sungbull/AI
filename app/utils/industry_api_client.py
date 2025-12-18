@@ -115,6 +115,80 @@ class IndustryAPIClient:
             logger.error(f"업종 정보 조회 중 오류 발생: {str(e)}")
             return None
     
+    def get_industry_code_by_name(self, industry_name: str) -> Optional[str]:
+        """
+        업종명으로 업종코드 조회
+        
+        Args:
+            industry_name: 업종명 (예: "고압가스판매업", "고압가스운반자")
+        
+        Returns:
+            업종코드 (예: "4608") 또는 None
+        """
+        if not self.service_key:
+            logger.error("DATA_GO_KR_SERVICE_KEY가 설정되지 않았습니다.")
+            return None
+        
+        try:
+            params = {
+                "serviceKey": self.service_key,
+                "pageNo": "1",
+                "numOfRows": "10",  # 여러 결과가 있을 수 있으므로 10개까지 조회
+                "indstrytyNm": industry_name  # 업종명으로 검색
+            }
+            
+            response = requests.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            # XML 파싱
+            root = ET.fromstring(response.content)
+            
+            # resultCode 확인
+            result_code = root.find(".//resultCode")
+            if result_code is not None and result_code.text != "00":
+                result_msg = root.find(".//resultMsg")
+                logger.error(f"API 오류: {result_msg.text if result_msg is not None else 'Unknown error'}")
+                return None
+            
+            # items 추출
+            items = root.findall(".//item")
+            if not items:
+                logger.warning(f"업종명 '{industry_name}'에 대한 정보를 찾을 수 없습니다.")
+                return None
+            
+            # 정확히 일치하는 업종명 찾기
+            for item in items:
+                indstryty_nm = item.find("indstrytyNm")
+                indstryty_cd = item.find("indstrytyCd")
+                
+                if (indstryty_nm is not None and indstryty_nm.text and 
+                    indstryty_cd is not None and indstryty_cd.text):
+                    # 업종명이 정확히 일치하거나 포함되는 경우
+                    if industry_name.strip() == indstryty_nm.text.strip():
+                        code = indstryty_cd.text.strip()
+                        logger.info(f"업종명 '{industry_name}' → 업종코드 '{code}' 조회 성공")
+                        return code
+            
+            # 정확히 일치하지 않으면 첫 번째 결과 반환
+            first_item = items[0]
+            indstryty_cd = first_item.find("indstrytyCd")
+            if indstryty_cd is not None and indstryty_cd.text:
+                code = indstryty_cd.text.strip()
+                logger.info(f"업종명 '{industry_name}' → 업종코드 '{code}' 조회 성공 (부분 일치)")
+                return code
+            
+            return None
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API 요청 실패: {str(e)}")
+            return None
+        except ET.ParseError as e:
+            logger.error(f"XML 파싱 실패: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"업종코드 조회 중 오류 발생: {str(e)}")
+            return None
+    
     def format_industry_text(self, industry_code: str) -> str:
         """
         업종코드로 형식화된 텍스트 생성

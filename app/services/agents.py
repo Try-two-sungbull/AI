@@ -46,13 +46,42 @@ def get_claude_llm():
 
 def create_extractor_agent() -> Agent:
     """
-    문서 추출 Agent (YAML 설정 기반)
+    문서 추출 Agent (YAML 설정 기반) - Claude 사용
 
     역할: 발주계획서에서 핵심 정보 추출
     책임: 문서 요약, 필드 추출 (JSON Schema 기반)
     금지: 법적 적합성 단정
     """
     return load_agent("extractor")
+
+
+def create_extractor_agent_openai() -> Agent:
+    """
+    문서 추출 Agent (OpenAI 사용) - 미싱 정보 보완용
+
+    역할: 발주계획서에서 핵심 정보 추출 (Claude 결과 보완)
+    책임: Claude가 놓친 정보를 추가로 추출
+    금지: 법적 적합성 단정
+    """
+    from app.utils.agent_loader import AgentConfigLoader
+    loader = AgentConfigLoader()
+    agent_config = loader.config.get("extractor", {})
+    
+    # OpenAI LLM 사용
+    openai_llm = get_llm()
+    
+    return Agent(
+        role=agent_config.get("role", "문서 정보 추출 전문가 (보완)").strip(),
+        goal=agent_config.get("goal", "구매계획서에서 누락된 핵심 정보를 추가로 추출").strip(),
+        backstory=(
+            agent_config.get("backstory", "").strip() + 
+            "\n\n당신은 Claude Extractor가 놓친 정보를 찾아내는 보완 역할을 합니다."
+        ),
+        llm=openai_llm,
+        verbose=True,
+        allow_delegation=False,
+        max_iter=agent_config.get("max_iter", 3)
+    )
 
 
 def create_classifier_agent() -> Agent:
