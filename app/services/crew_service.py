@@ -2,7 +2,10 @@ from crewai import Crew, Process
 from typing import Dict, Any, Optional, List
 import json
 import os
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from .agents import (
     create_extractor_agent,
@@ -15,7 +18,8 @@ from .tasks import (
     create_classification_task,
     create_generation_task,
     create_validation_task,
-    create_revision_task
+    create_revision_task,
+    create_self_reflection_task
 )
 from app.models.agent_state import AgentState
 
@@ -620,6 +624,77 @@ class BiddingDocumentCrew:
             
             # 최종 문서는 Generator 결과 사용
             generated_document = generated_document
+            
+            # [신규] Generator 셀프 리플렉션 (제한적 사전 점검)
+            use_self_reflection = os.getenv("USE_SELF_REFLECTION", "true").lower() == "true"
+            MAX_SELF_REFLECTION_ROUNDS = 1  # 무한 루프 방지
+            
+            if use_self_reflection:
+                print("\n" + "="*60)
+                print("🔍 [셀프 리플렉션] Generator 셀프 리플렉션 시작 (제한적 사전 점검)")
+                print("="*60)
+                print(f"📄 문서 길이: {len(generated_document)}자")
+                print(f"📋 분류 결과: {classification.get('recommended_type', 'N/A')}")
+                
+                self_reflection_result = self.run_self_reflection(
+                    generated_document,
+                    extracted_data_with_classification,
+                    classification,
+                    round_count=0,
+                    max_rounds=MAX_SELF_REFLECTION_ROUNDS
+                )
+                
+                # 셀프 리플렉션 결과 상세 로그
+                print("\n📊 [셀프 리플렉션] 결과 분석:")
+                self_check_passed = self_reflection_result.get("self_check_passed", True)
+                issues = self_reflection_result.get("issues", [])
+                auto_fixable = self_reflection_result.get("auto_fixable", {})
+                
+                if self_check_passed:
+                    print("✅ 셀프 리플렉션 통과: 문제 없음")
+                else:
+                    print(f"⚠️ 셀프 리플렉션에서 {len(issues)}개 이슈 발견:")
+                    for idx, issue in enumerate(issues, 1):
+                        issue_type = issue.get('type', 'N/A')
+                        description = issue.get('description', 'N/A')
+                        confidence = issue.get('confidence', 'N/A')
+                        fix_type = issue.get('fix_type', 'N/A')
+                        location = issue.get('location', 'N/A')
+                        patch = issue.get('patch', {})
+                        
+                        print(f"\n  [{idx}] 이슈 상세:")
+                        print(f"      - 유형: {issue_type}")
+                        print(f"      - 설명: {description}")
+                        print(f"      - 신뢰도: {confidence}")
+                        print(f"      - 수정 유형: {fix_type}")
+                        print(f"      - 위치: {location}")
+                        if patch:
+                            print(f"      - 패치: {patch.get('action', 'N/A')} '{patch.get('target', 'N/A')}' → '{patch.get('value', 'N/A')}'")
+                    
+                    # 자동 수정 가능 여부 확인
+                    if auto_fixable.get("allowed", False):
+                        fix_scope = auto_fixable.get("fix_scope", "none")
+                        print(f"\n🔧 [자동 수정] 자동 수정 가능 (범위: {fix_scope})")
+                        
+                        if fix_scope in ["placeholder_only", "section_header_only"]:
+                            print(f"   적용 중...")
+                            original_doc_length = len(generated_document)
+                            generated_document = self.apply_self_reflection_fixes(
+                                generated_document,
+                                issues,
+                                fix_scope
+                            )
+                            fixed_doc_length = len(generated_document)
+                            print(f"   ✅ 자동 수정 완료 (문서 길이: {original_doc_length}자 → {fixed_doc_length}자)")
+                        else:
+                            print(f"   ⚠️ 자동 수정 범위가 안전하지 않아 건너뜁니다. (fix_scope: {fix_scope})")
+                    else:
+                        print(f"\n⚠️ [자동 수정] 자동 수정 불가능한 이슈입니다.")
+                        print(f"   Validator로 전달됩니다.")
+                
+                print("="*60 + "\n")
+            else:
+                print("⏭️  [셀프 리플렉션] 건너뛰기: USE_SELF_REFLECTION=false")
 
         # Generator 결과 검증 (Rule Guard)
         validation_issues = self._validate_generation_result(
@@ -686,6 +761,197 @@ class BiddingDocumentCrew:
                 })
         
         return issues
+
+    def run_self_reflection(
+        self,
+        generated_document: str,
+        extracted_data: Dict[str, Any],
+        classification: Dict[str, Any],
+        round_count: int = 0,
+        max_rounds: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Generator 셀프 리플렉션 (제한적 사전 점검)
+        
+        Generator가 자신의 출력을 제한적으로 검토합니다.
+        - 필수 섹션 누락 여부
+        - 플레이스홀더 남아있음 여부
+        - 분류 결과와 일치 여부
+        - 기본 구조 정확성
+        
+        ⚠️ 무한 루프 방지: 최대 1회만 실행
+        
+        Args:
+            generated_document: Generator가 생성한 문서
+            extracted_data: 추출된 데이터
+            classification: 분류 결과
+            round_count: 현재 라운드 (무한 루프 방지용)
+            max_rounds: 최대 라운드 수 (기본값: 1)
+        
+        Returns:
+            SelfReflectionResult 형식의 딕셔너리
+        """
+        # 무한 루프 방지
+        if round_count >= max_rounds:
+            logger.debug(f"⚠️ 셀프 리플렉션 최대 라운드({max_rounds}) 도달. 건너뜁니다.")
+            return {
+                "self_check_passed": True,
+                "issues": [],
+                "auto_fixable": {"allowed": False, "fix_scope": "none"}
+            }
+        
+        print(f"   📝 [셀프 리플렉션] Task 생성 중...")
+        task = create_self_reflection_task(
+            self.generator,
+            generated_document,
+            extracted_data,
+            classification
+        )
+        
+        print(f"   🤖 [셀프 리플렉션] Generator Agent 실행 중...")
+        crew = Crew(
+            agents=[self.generator],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        result = crew.kickoff()
+        print(f"   ✅ [셀프 리플렉션] Generator Agent 실행 완료")
+        
+        print(f"   🔍 [셀프 리플렉션] 결과 파싱 중...")
+        try:
+            reflection_result = json.loads(str(result))
+            print(f"   ✅ [셀프 리플렉션] JSON 파싱 성공")
+        except json.JSONDecodeError:
+            print(f"   ⚠️ [셀프 리플렉션] JSON 파싱 실패, 코드 블록에서 추출 시도...")
+            # JSON 파싱 실패 시 기본값 반환
+            import re
+            result_str = str(result)
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', result_str, re.DOTALL)
+            if json_match:
+                try:
+                    reflection_result = json.loads(json_match.group(1))
+                    print(f"   ✅ [셀프 리플렉션] 코드 블록에서 JSON 추출 성공")
+                except json.JSONDecodeError:
+                    print(f"   ❌ [셀프 리플렉션] 코드 블록 JSON 파싱도 실패, 기본값 사용")
+                    reflection_result = {
+                        "self_check_passed": True,
+                        "issues": [],
+                        "auto_fixable": {"allowed": False, "fix_scope": "none"},
+                        "raw_output": result_str
+                    }
+            else:
+                print(f"   ❌ [셀프 리플렉션] JSON 코드 블록을 찾을 수 없음, 기본값 사용")
+                reflection_result = {
+                    "self_check_passed": True,
+                    "issues": [],
+                    "auto_fixable": {"allowed": False, "fix_scope": "none"},
+                    "raw_output": result_str
+                }
+        
+        # 기본값 보장
+        if "self_check_passed" not in reflection_result:
+            reflection_result["self_check_passed"] = len(reflection_result.get("issues", [])) == 0
+        
+        if "auto_fixable" not in reflection_result:
+            reflection_result["auto_fixable"] = {"allowed": False, "fix_scope": "none"}
+        
+        # 결과 요약 로그
+        issues_count = len(reflection_result.get("issues", []))
+        print(f"   📊 [셀프 리플렉션] 결과 요약:")
+        print(f"      - 통과 여부: {'✅ 통과' if reflection_result.get('self_check_passed') else '❌ 실패'}")
+        print(f"      - 발견된 이슈: {issues_count}개")
+        print(f"      - 자동 수정 가능: {'✅ 가능' if reflection_result.get('auto_fixable', {}).get('allowed') else '❌ 불가능'}")
+        if reflection_result.get('auto_fixable', {}).get('allowed'):
+            print(f"      - 수정 범위: {reflection_result.get('auto_fixable', {}).get('fix_scope', 'N/A')}")
+        
+        return reflection_result
+    
+    def apply_self_reflection_fixes(
+        self,
+        document: str,
+        issues: List[Dict[str, Any]],
+        fix_scope: str
+    ) -> str:
+        """
+        셀프 리플렉션에서 발견된 이슈를 자동으로 수정
+        
+        ⚠️ 안전한 수정만 수행:
+        - placeholder_only: 플레이스홀더만 수정
+        - section_header_only: 섹션 헤더만 수정
+        
+        Args:
+            document: 원본 문서
+            issues: 셀프 리플렉션 이슈 목록
+            fix_scope: 수정 범위
+        
+        Returns:
+            수정된 문서
+        """
+        import re
+        
+        print(f"      🔧 [자동 수정] 수정 범위: {fix_scope}")
+        fixed_document = document
+        fix_count = 0
+        
+        # 안전한 수정만 수행
+        safe_types = {
+            "placeholder_only": ["placeholder_remaining"],
+            "section_header_only": ["missing_section", "structure_error"]
+        }
+        
+        allowed_types = safe_types.get(fix_scope, [])
+        print(f"      📋 [자동 수정] 허용된 이슈 유형: {allowed_types}")
+        
+        for idx, issue in enumerate(issues, 1):
+            issue_type = issue.get("type", "")
+            if issue_type not in allowed_types:
+                print(f"      ⏭️  [{idx}] 이슈 유형 '{issue_type}'는 수정 범위에 없어 건너뜀")
+                continue
+            
+            patch = issue.get("patch", {})
+            if not patch:
+                print(f"      ⚠️  [{idx}] 패치 정보가 없어 건너뜀")
+                continue
+            
+            action = patch.get("action", "")
+            target = patch.get("target", "")
+            value = patch.get("value", "")
+            
+            print(f"      🔨 [{idx}] 수정 적용: {action} '{target}' → '{value}'")
+            
+            if action == "replace" and target and value:
+                # 플레이스홀더 교체
+                if issue_type == "placeholder_remaining":
+                    # {placeholder} 형식 찾아서 교체
+                    placeholder_pattern = re.escape(target)
+                    before_count = fixed_document.count(target)
+                    fixed_document = re.sub(placeholder_pattern, value, fixed_document)
+                    after_count = fixed_document.count(target)
+                    replaced_count = before_count - after_count
+                    if replaced_count > 0:
+                        fix_count += replaced_count
+                        print(f"         ✅ 플레이스홀더 교체 완료: {target} → {value} ({replaced_count}회)")
+                    else:
+                        print(f"         ⚠️  플레이스홀더를 찾을 수 없음: {target}")
+            
+            elif action == "add" and target and value:
+                # 섹션 추가 (안전한 경우만)
+                if issue_type == "missing_section":
+                    # 섹션 위치 찾아서 추가
+                    location = issue.get("location", "")
+                    if location and value:
+                        # 간단한 추가 로직 (복잡한 것은 Validator로)
+                        if target in fixed_document:
+                            fixed_document = fixed_document.replace(target, f"{target}\n{value}")
+                            fix_count += 1
+                            print(f"         ✅ 섹션 추가 완료: {value}")
+                        else:
+                            print(f"         ⚠️  타겟 위치를 찾을 수 없음: {target}")
+        
+        print(f"      📊 [자동 수정] 총 {fix_count}개 수정 적용 완료")
+        return fixed_document
 
     def run_validation(
         self,

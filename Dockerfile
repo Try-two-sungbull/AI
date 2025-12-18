@@ -6,26 +6,42 @@ WORKDIR /app
 
 # 시스템 패키지 업데이트 및 필수 패키지 설치
 # weasyprint를 위한 시스템 라이브러리 포함
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    # weasyprint 의존성
-    libcairo2 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libgdk-pixbuf-xlib-2.0-0 \
-    libffi-dev \
-    shared-mime-info \
-    # 한글 폰트 (한국어 문서 처리용)
-    fonts-nanum \
-    # pdf2image를 위한 poppler-utils
-    poppler-utils \
-    # LibreOffice (HTML → DOCX/HWP 변환용)
-    libreoffice \
-    libreoffice-writer \
-    # 기타 유틸리티
-    git \
-    && rm -rf /var/lib/apt/lists/*
+# 네트워크 오류 대비 재시도 로직 포함
+RUN apt-get update && \
+    (apt-get install -y --fix-missing \
+        build-essential \
+        curl \
+        # weasyprint 의존성
+        libcairo2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libgdk-pixbuf-xlib-2.0-0 \
+        libffi-dev \
+        shared-mime-info \
+        # 한글 폰트 (한국어 문서 처리용)
+        fonts-nanum \
+        # pdf2image를 위한 poppler-utils
+        poppler-utils \
+        # LibreOffice (HTML → DOCX/HWP 변환용)
+        libreoffice \
+        libreoffice-writer \
+        # 기타 유틸리티
+        git \
+    || (apt-get update && apt-get install -y --fix-missing \
+        build-essential \
+        curl \
+        libcairo2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libgdk-pixbuf-xlib-2.0-0 \
+        libffi-dev \
+        shared-mime-info \
+        fonts-nanum \
+        poppler-utils \
+        libreoffice \
+        libreoffice-writer \
+        git)) && \
+    rm -rf /var/lib/apt/lists/*
 
 # 비root 사용자 생성 (보안)
 RUN useradd -m -u 1000 appuser && \

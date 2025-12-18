@@ -235,6 +235,107 @@ def create_validation_task(
     )
 
 
+def create_self_reflection_task(
+    agent,
+    generated_document: str,
+    extracted_data: Dict[str, Any],
+    classification: Dict[str, Any]
+) -> Task:
+    """
+    Generator 셀프 리플렉션 Task (제한적 사전 점검)
+    
+    Generator가 자신의 출력을 제한적으로 검토합니다.
+    - 필수 섹션 누락 여부
+    - 플레이스홀더 남아있음 여부
+    - 분류 결과와 일치 여부
+    - 기본 구조 정확성
+    
+    ⚠️ 중요: 법령 해석이나 법적 판단은 하지 않습니다 (Validator가 담당)
+    
+    Input:
+        - generated_document: Generator가 생성한 문서
+        - extracted_data: 추출된 데이터 (참고용)
+        - classification: 분류 결과 (일치 여부 확인용)
+    
+    Output: SelfReflectionResult JSON
+    """
+    import json
+    
+    recommended_type = classification.get("recommended_type", "")
+    
+    return Task(
+        description=f"""
+당신이 방금 생성한 다음 문서를 **제한적으로만** 검토하세요.
+
+⚠️ 중요: 이것은 "검증"이 아니라 "사전 점검(precheck)"입니다.
+법령 해석이나 법적 판단은 하지 마세요. 기계적 오류만 확인하세요.
+
+생성된 문서:
+```markdown
+{generated_document}
+```
+
+참고 정보:
+- 분류 결과: {recommended_type}
+- 추출된 데이터: {json.dumps(extracted_data, ensure_ascii=False, indent=2)[:500]}
+
+검토 항목 (이것만 확인):
+1. **필수 섹션 존재 여부**
+   - "위와 같이 공고합니다" 포함 여부
+   - "기타사항", "입찰무효", "입찰보증금", "청렴계약이행", "예정가격", "공동계약", "입찰참가자격" 등 필수 섹션
+
+2. **플레이스홀더 남아있음 여부**
+   - {{project_name}}, {{estimated_amount}} 같은 플레이스홀더가 남아있는지
+   - 빈 값이나 불완전한 데이터가 있는지
+
+3. **분류 결과와 일치 여부**
+   - 분류 결과가 "{recommended_type}"인데, 문서에 다른 방식(예: "최저가", "적격심사")이 잘못 언급되었는지
+   - 예: "적격심사"로 분류되었는데 문서에 "최저가 낙찰" 문구가 있는지
+
+4. **기본 구조 정확성**
+   - 섹션 번호가 연속적인지
+   - 테이블 형식이 올바른지
+
+⚠️ 하지 말아야 할 것:
+- 법령 해석
+- 법적 적합성 판단
+- 복잡한 법적 판단
+- severity 판단 (이건 Validator가 담당)
+
+출력 형식 (JSON):
+{{
+    "self_check_passed": true/false,
+    "issues": [
+        {{
+            "type": "missing_section" | "placeholder_remaining" | "inconsistency" | "structure_error",
+            "confidence": "high" | "low",
+            "fix_type": "mechanical" | "content_related",
+            "location": "섹션 위치 또는 라인 번호",
+            "description": "문제 설명",
+            "patch": {{
+                "action": "replace" | "add" | "remove",
+                "target": "수정할 텍스트 또는 위치",
+                "value": "수정할 값 (action이 replace인 경우)"
+            }}
+        }}
+    ],
+    "auto_fixable": {{
+        "allowed": true/false,
+        "fix_scope": "placeholder_only" | "section_header_only" | "none"
+    }}
+}}
+
+중요 규칙:
+1. 문제가 없으면 self_check_passed: true, issues: [] 로 출력
+2. patch는 구조적이고 명확하게 제시 (자유 텍스트 수정 제안 ❌)
+3. auto_fixable.allowed는 안전한 수정만 true (placeholder, 섹션 헤더 등)
+4. 법령 관련 문제는 issues에 포함하지 마세요 (Validator가 담당)
+""",
+        agent=agent,
+        expected_output="JSON 형식의 셀프 리플렉션 결과 (SelfReflectionResult 스키마 준수)"
+    )
+
+
 def create_revision_task(
     agent,
     original_document: str,
