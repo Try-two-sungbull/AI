@@ -11,8 +11,11 @@ import re
 import os
 import tempfile
 import subprocess
+import logging
 from pathlib import Path
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 try:
     import markdown
@@ -30,6 +33,11 @@ try:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 except ImportError:
     Document = None
+
+try:
+    from htmldocx import HtmlToDocx
+except ImportError:
+    HtmlToDocx = None
 
 
 def markdown_to_pdf(markdown_content: str, output_path: Optional[str] = None) -> bytes:
@@ -541,12 +549,16 @@ def html_to_pdf(html_content: str, output_path: Optional[str] = None) -> bytes:
         <head>
             <meta charset="UTF-8">
             <style>
+                @font-face {{
+                    font-family: 'NotoSansKR';
+                    src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
+                }}
                 @page {{
                     size: A4;
                     margin: 2cm;
                 }}
                 body {{
-                    font-family: "맑은 고딕", "Malgun Gothic", sans-serif;
+                    font-family: 'NotoSansKR', "맑은 고딕", "Malgun Gothic", sans-serif;
                     font-size: 11pt;
                     line-height: 1.6;
                     color: #000;
@@ -562,14 +574,326 @@ def html_to_pdf(html_content: str, output_path: Optional[str] = None) -> bytes:
         </html>
         """
     
+    # HTML에 charset이 명시되어 있는지 확인하고, 없으면 추가
+    html_lower = html_content.lower()
+    if '<meta charset' not in html_lower and '<meta http-equiv="content-type"' not in html_lower:
+        # head 태그 안에 charset 메타 태그 추가
+        if '<head>' in html_content:
+            html_content = html_content.replace('<head>', '<head>\n    <meta charset="UTF-8">', 1)
+        elif '<HEAD>' in html_content:
+            html_content = html_content.replace('<HEAD>', '<HEAD>\n    <meta charset="UTF-8">', 1)
+    
+    # HTML에 NotoSansKR 폰트가 없으면 추가 (한글 폰트 문제 해결)
+    html_lower_check = html_content.lower()
+    if 'notosanskr' not in html_lower_check:
+        # <style> 태그 찾기
+        style_pattern = r'<style[^>]*>'
+        style_match = re.search(style_pattern, html_content, re.IGNORECASE)
+        
+        if style_match:
+            # <style> 태그 바로 다음에 @font-face 추가
+            style_end = style_match.end()
+            font_face_css = """    @font-face {
+        font-family: 'NotoSansKR';
+        src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
+    }
+"""
+            html_content = html_content[:style_end] + '\n' + font_face_css + html_content[style_end:]
+            
+            # body 스타일에 NotoSansKR 폰트 추가 (더 정확한 패턴 사용)
+            # body { ... } 패턴 찾기 (여러 줄 지원)
+            body_pattern = r'body\s*\{[^}]*\}'
+            body_match = re.search(body_pattern, html_content, re.IGNORECASE | re.DOTALL)
+            if body_match:
+                body_style = body_match.group(0)
+                if 'NotoSansKR' not in body_style and 'notosanskr' not in body_style.lower():
+                    # font-family가 있으면 앞에 추가
+                    if 'font-family' in body_style:
+                        # font-family: ... ; 패턴 찾아서 앞에 NotoSansKR 추가
+                        body_style = re.sub(
+                            r'(font-family\s*:\s*)([^;]+)',
+                            r"\1'NotoSansKR', \2",
+                            body_style,
+                            flags=re.IGNORECASE
+                        )
+                    else:
+                        # font-family가 없으면 추가 (body { 다음에)
+                        body_style = re.sub(
+                            r'(body\s*\{)',
+                            r"\1\n        font-family: 'NotoSansKR', sans-serif;",
+                            body_style,
+                            flags=re.IGNORECASE
+                        )
+                    html_content = html_content[:body_match.start()] + body_style + html_content[body_match.end():]
+        else:
+            # <style> 태그가 없으면 <head> 안에 추가
+            if '<head>' in html_content or '<HEAD>' in html_content:
+                head_end = html_content.find('</head>')
+                if head_end == -1:
+                    head_end = html_content.find('</HEAD>')
+                if head_end > 0:
+                    style_block = """
+    <style>
+        @font-face {
+            font-family: 'NotoSansKR';
+            src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
+        }
+        body {
+            font-family: 'NotoSansKR', sans-serif;
+        }
+    </style>
+"""
+                    html_content = html_content[:head_end] + style_block + html_content[head_end:]
+    
+    # WeasyPrint에 UTF-8로 전달하여 인코딩 문제 방지
     font_config = FontConfiguration()
-    pdf_bytes = HTML(string=html_content).write_pdf(font_config=font_config)
+    
+    # HTML에 charset이 확실히 있는지 확인하고 추가
+    html_lower = html_content.lower()
+    has_charset = '<meta charset' in html_lower or 'charset=' in html_lower
+    
+    if not has_charset:
+        # head 태그 바로 다음에 charset 추가
+        if '<head>' in html_content:
+            html_content = html_content.replace('<head>', '<head>\n    <meta charset="UTF-8">', 1)
+        elif '<HEAD>' in html_content:
+            html_content = html_content.replace('<HEAD>', '<HEAD>\n    <meta charset="UTF-8">', 1)
+        else:
+            # head 태그가 없으면 추가
+            if '<html>' in html_content:
+                html_content = html_content.replace('<html>', '<html>\n<head>\n    <meta charset="UTF-8">\n</head>', 1)
+            elif '<HTML>' in html_content:
+                html_content = html_content.replace('<HTML>', '<HTML>\n<HEAD>\n    <meta charset="UTF-8">\n</HEAD>', 1)
+    
+    # WeasyPrint에 UTF-8 바이트로 전달 (인코딩 문제 해결)
+    # HTML의 charset을 더 명확하게 지정 (HTML5 표준)
+    html_lower = html_content.lower()
+    if '<meta charset' not in html_lower:
+        # HTML5 방식: <meta charset="UTF-8">를 <head> 바로 다음에 추가
+        if '<head>' in html_content:
+            # <head> 다음에 charset 메타 태그 추가
+            head_pos = html_content.find('<head>')
+            if head_pos >= 0:
+                head_end = html_content.find('>', head_pos) + 1
+                html_content = html_content[:head_end] + '\n  <meta charset="UTF-8">' + html_content[head_end:]
+        elif '<HEAD>' in html_content:
+            head_pos = html_content.find('<HEAD>')
+            if head_pos >= 0:
+                head_end = html_content.find('>', head_pos) + 1
+                html_content = html_content[:head_end] + '\n  <meta charset="UTF-8">' + html_content[head_end:]
+    
+    # HTML을 UTF-8로 완전히 정규화 (인코딩 문제 해결)
+    # 한글 문자가 포함된 경우를 대비하여 UTF-8로 명시적으로 인코딩/디코딩
+    try:
+        # UTF-8로 인코딩 후 다시 디코딩하여 완전히 정규화
+        html_normalized = html_content.encode('utf-8', errors='strict').decode('utf-8', errors='strict')
+        logger.debug("HTML UTF-8 정규화 완료")
+    except Exception as norm_err:
+        logger.warning(f"HTML 정규화 실패, 원본 사용: {str(norm_err)}")
+        html_normalized = html_content
+    
+    # HTML5 DOCTYPE이 없으면 추가 (WeasyPrint가 HTML5로 인식하도록)
+    if not html_normalized.strip().startswith('<!DOCTYPE'):
+        if html_normalized.strip().startswith('<html'):
+            html_normalized = '<!DOCTYPE html>\n' + html_normalized
+            logger.debug("HTML5 DOCTYPE 추가")
+    
+    # charset 메타 태그를 HTML5 방식으로 명확하게 지정 (WeasyPrint가 인식하도록)
+    # <head> 태그의 첫 번째 자식으로 charset 메타 태그를 배치
+    html_lower = html_normalized.lower()
+    has_charset_meta = '<meta charset' in html_lower or 'charset=' in html_lower
+    
+    if not has_charset_meta:
+        # HTML5 방식: <meta charset="UTF-8">를 <head> 바로 다음에 추가
+        if '<head>' in html_normalized:
+            head_pos = html_normalized.find('<head>')
+            if head_pos >= 0:
+                head_end = html_normalized.find('>', head_pos) + 1
+                html_normalized = html_normalized[:head_end] + '\n  <meta charset="UTF-8">' + html_normalized[head_end:]
+                logger.debug("charset 메타 태그 추가 (<head> 다음)")
+        elif '<HEAD>' in html_normalized:
+            head_pos = html_normalized.find('<HEAD>')
+            if head_pos >= 0:
+                head_end = html_normalized.find('>', head_pos) + 1
+                html_normalized = html_normalized[:head_end] + '\n  <meta charset="UTF-8">' + html_normalized[head_end:]
+                logger.debug("charset 메타 태그 추가 (<HEAD> 다음)")
+        else:
+            # head 태그가 없으면 html 태그 다음에 head 추가
+            if '<html>' in html_normalized:
+                html_pos = html_normalized.find('<html>')
+                html_end = html_normalized.find('>', html_pos) + 1
+                html_normalized = html_normalized[:html_end] + '\n<head>\n  <meta charset="UTF-8">\n</head>' + html_normalized[html_end:]
+                logger.debug("head 태그와 charset 메타 태그 추가")
+    else:
+        # charset 메타 태그가 있지만 올바른 위치에 있는지 확인
+        # <head> 태그 바로 다음에 오도록 재배치
+        if '<head>' in html_normalized or '<HEAD>' in html_normalized:
+            head_tag = '<head>' if '<head>' in html_normalized else '<HEAD>'
+            head_pos = html_normalized.find(head_tag)
+            if head_pos >= 0:
+                head_end = html_normalized.find('>', head_pos) + 1
+                # charset 메타 태그를 찾아서 제거하고 <head> 바로 다음에 재배치
+                charset_pattern = r'<meta\s+charset=["\']?UTF-8["\']?\s*/?>'
+                html_normalized = re.sub(charset_pattern, '', html_normalized, flags=re.IGNORECASE)
+                html_normalized = html_normalized[:head_end] + '\n  <meta charset="UTF-8">' + html_normalized[head_end:]
+                logger.debug("charset 메타 태그 재배치")
+    
+    # 방법 1: 임시 파일을 UTF-8 바이너리 모드로 저장 (가장 확실)
+    # UTF-8 바이트로 저장하면 WeasyPrint가 charset 메타 태그를 읽어서 올바른 인코딩으로 파싱
+    tmp_file_path = None
+    try:
+        # HTML을 UTF-8 바이트로 변환
+        html_bytes = html_normalized.encode('utf-8', errors='strict')
+        logger.debug(f"HTML을 UTF-8 바이트로 변환 완료 (크기: {len(html_bytes)} bytes)")
+        
+        # 바이너리 모드로 임시 파일 생성
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.html', delete=False) as tmp_file:
+            tmp_file.write(html_bytes)
+            tmp_file_path = tmp_file.name
+            logger.debug(f"임시 파일 생성: {tmp_file_path}")
+        
+        # 파일 경로로 HTML 로드 (WeasyPrint가 파일의 charset 메타 태그를 읽어서 인코딩 결정)
+        logger.info("WeasyPrint HTML 파싱 시작...")
+        pdf_bytes = HTML(filename=tmp_file_path).write_pdf(font_config=font_config)
+        logger.info("✅ 임시 파일(UTF-8 바이너리)로 PDF 변환 성공")
+    except UnicodeEncodeError as e:
+        logger.warning(f"임시 파일(UTF-8 바이너리) 방법 실패 (인코딩 오류): {str(e)}")
+        # 방법 2: UTF-8 텍스트 모드로 저장
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.html', delete=False) as tmp_file:
+                tmp_file.write(html_normalized)
+                tmp_file_path = tmp_file.name
+                logger.debug(f"임시 파일 생성 (텍스트 모드): {tmp_file_path}")
+            
+            pdf_bytes = HTML(filename=tmp_file_path).write_pdf(font_config=font_config)
+            logger.info("✅ 임시 파일(UTF-8 텍스트)로 PDF 변환 성공")
+        except Exception as e2:
+            logger.warning(f"임시 파일(바이너리) 방법 실패: {str(e2)}")
+            # 방법 3: UTF-8 바이트를 BytesIO로 전달
+            try:
+                html_bytes = html_normalized.encode('utf-8')
+                html_file_obj = io.BytesIO(html_bytes)
+                pdf_bytes = HTML(file_obj=html_file_obj, base_url='.').write_pdf(font_config=font_config)
+                logger.info("✅ BytesIO로 PDF 변환 성공")
+            except Exception as e3:
+                logger.warning(f"BytesIO 방법 실패: {str(e3)}")
+                # 방법 4: 문자열로 직접 전달 (최종 fallback)
+                try:
+                    pdf_bytes = HTML(string=html_normalized).write_pdf(font_config=font_config)
+                    logger.info("✅ 문자열 직접 전달로 PDF 변환 성공")
+                except Exception as e4:
+                    logger.error(f"모든 PDF 변환 방법 실패")
+                    raise RuntimeError(f"PDF 변환 실패 (모든 방법 시도): UTF-8텍스트파일={str(e)}, 바이너리파일={str(e2)}, BytesIO={str(e3)}, 문자열={str(e4)}")
+    except Exception as e:
+        logger.warning(f"임시 파일(UTF-8 바이너리) 방법 실패: {str(e)}")
+        logger.debug(f"오류 타입: {type(e).__name__}, 메시지: {str(e)}")
+        # 위와 동일한 fallback 로직
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.html', delete=False) as tmp_file:
+                tmp_file.write(html_normalized)
+                tmp_file_path = tmp_file.name
+                logger.debug(f"임시 파일 생성 (텍스트 모드, fallback): {tmp_file_path}")
+            
+            pdf_bytes = HTML(filename=tmp_file_path).write_pdf(font_config=font_config)
+            logger.info("✅ 임시 파일(UTF-8 텍스트)로 PDF 변환 성공")
+        except Exception as e2:
+            logger.warning(f"임시 파일(바이너리) 방법 실패: {str(e2)}")
+            try:
+                html_bytes = html_normalized.encode('utf-8')
+                html_file_obj = io.BytesIO(html_bytes)
+                pdf_bytes = HTML(file_obj=html_file_obj, base_url='.').write_pdf(font_config=font_config)
+                logger.info("✅ BytesIO로 PDF 변환 성공")
+            except Exception as e3:
+                logger.warning(f"BytesIO 방법 실패: {str(e3)}")
+                try:
+                    pdf_bytes = HTML(string=html_normalized).write_pdf(font_config=font_config)
+                    logger.info("✅ 문자열 직접 전달로 PDF 변환 성공")
+                except Exception as e4:
+                    logger.error(f"모든 PDF 변환 방법 실패")
+                    raise RuntimeError(f"PDF 변환 실패 (모든 방법 시도): UTF-8텍스트파일={str(e)}, 바이너리파일={str(e2)}, BytesIO={str(e3)}, 문자열={str(e4)}")
+    finally:
+        # 임시 파일 삭제
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
     
     if output_path:
         with open(output_path, 'wb') as f:
             f.write(pdf_bytes)
     
     return pdf_bytes
+
+
+def html_to_docx(html_content: str, output_path: Optional[str] = None) -> bytes:
+    """
+    HTML을 DOCX로 변환 (HtmlToDocx 사용, 인코딩 문제 해결)
+    
+    Args:
+        html_content: HTML 형식의 텍스트
+        output_path: 출력 파일 경로 (None이면 bytes 반환)
+    
+    Returns:
+        DOCX 파일 바이트
+    
+    Raises:
+        ImportError: HtmlToDocx가 설치되지 않음
+        RuntimeError: 변환 실패
+    """
+    logger.info(f"html_to_docx 함수 호출됨 (HtmlToDocx={HtmlToDocx is not None})")
+    
+    if HtmlToDocx is None:
+        # HtmlToDocx가 없으면 LibreOffice fallback
+        logger.warning("HtmlToDocx가 설치되지 않음, LibreOffice 사용")
+        return html_to_docx_with_libreoffice(html_content, output_path)
+    
+    try:
+        logger.info("HtmlToDocx로 HTML → DOCX 변환 시도...")
+        # HtmlToDocx로 HTML을 DOCX로 변환
+        parser = HtmlToDocx()
+        
+        # HTML 문자열을 DOCX Document로 변환
+        logger.debug(f"HTML 내용 길이: {len(html_content)}")
+        doc = parser.parse_html_string(html_content)
+        logger.debug("HtmlToDocx.parse_html_string() 성공")
+        
+        # 임시 파일을 사용하여 DOCX 저장 (Document.save()는 파일 경로만 받음)
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+        
+        try:
+            # 임시 파일에 저장
+            doc.save(tmp_path)
+            logger.debug(f"DOCX 임시 파일 저장: {tmp_path}")
+            
+            # 파일 읽기
+            with open(tmp_path, 'rb') as f:
+                docx_content = f.read()
+            logger.debug(f"DOCX 파일 크기: {len(docx_content)} bytes")
+            
+            # 출력 경로가 있으면 복사
+            if output_path:
+                with open(output_path, 'wb') as f:
+                    f.write(docx_content)
+            
+            logger.info("✅ HTML → DOCX 변환 성공 (HtmlToDocx)")
+            return docx_content
+        finally:
+            # 임시 파일 삭제
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+        
+    except Exception as e:
+        logger.error(f"HtmlToDocx 변환 실패: {str(e)}")
+        import traceback
+        logger.error(f"HtmlToDocx 오류 상세: {traceback.format_exc()}")
+        logger.warning("LibreOffice fallback 시도...")
+        # 실패 시 LibreOffice fallback
+        return html_to_docx_with_libreoffice(html_content, output_path)
 
 
 def html_to_docx_with_libreoffice(html_content: str, output_path: Optional[str] = None) -> bytes:
@@ -668,9 +992,84 @@ def html_to_docx_with_libreoffice(html_content: str, output_path: Optional[str] 
             raise RuntimeError(f"HTML → DOCX 변환 중 오류: {str(e)}")
 
 
+def docx_to_pdf(docx_content: bytes, output_path: Optional[str] = None) -> bytes:
+    """
+    DOCX를 PDF로 변환 (LibreOffice 사용)
+    
+    Args:
+        docx_content: DOCX 파일 바이트
+        output_path: 출력 파일 경로 (None이면 bytes 반환)
+    
+    Returns:
+        PDF 파일 바이트
+    
+    Raises:
+        RuntimeError: LibreOffice가 설치되지 않았거나 변환 실패
+    """
+    soffice_path = _find_libreoffice()
+    
+    if not soffice_path:
+        raise RuntimeError(
+            "LibreOffice가 설치되지 않았습니다. "
+            "Docker 환경에서는 Dockerfile에 LibreOffice 설치가 필요합니다."
+        )
+    
+    # 임시 디렉토리 생성
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # DOCX 파일 저장
+        docx_path = os.path.join(temp_dir, "input.docx")
+        with open(docx_path, "wb") as f:
+            f.write(docx_content)
+        
+        # LibreOffice로 PDF 변환
+        try:
+            result = subprocess.run(
+                [
+                    soffice_path,
+                    "--headless",
+                    "--convert-to", "pdf",
+                    "--outdir", temp_dir,
+                    docx_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"DOCX → PDF 변환 실패 (exit code {result.returncode}): {result.stderr or result.stdout}"
+                )
+            
+            # 변환된 PDF 파일 읽기
+            pdf_path = os.path.join(temp_dir, "input.pdf")
+            if not os.path.exists(pdf_path):
+                raise RuntimeError(
+                    f"PDF 파일이 생성되지 않았습니다. 생성된 파일: {os.listdir(temp_dir)}"
+                )
+            
+            with open(pdf_path, "rb") as f:
+                pdf_content = f.read()
+            
+            if output_path:
+                with open(output_path, 'wb') as f:
+                    f.write(pdf_content)
+            
+            logger.info("✅ DOCX → PDF 변환 성공 (LibreOffice)")
+            return pdf_content
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("DOCX → PDF 변환 시간 초과 (60초)")
+        except Exception as e:
+            raise RuntimeError(f"DOCX → PDF 변환 중 오류: {str(e)}")
+
+
 def html_to_hwp_with_libreoffice(html_content: str, output_path: Optional[str] = None) -> bytes:
     """
     HTML을 HWP로 변환 (LibreOffice 사용, 파란색 스타일 유지)
+    
+    LibreOffice는 HWP로 직접 변환을 지원하지 않을 수 있으므로,
+    HTML → DOCX → HWP 경로를 시도합니다.
     
     Args:
         html_content: HTML 형식의 텍스트
@@ -721,8 +1120,10 @@ def html_to_hwp_with_libreoffice(html_content: str, output_path: Optional[str] =
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         
-        # LibreOffice로 HWP 변환
+        # 방법 1: HTML → HWP 직접 변환 시도
+        hwp_path = os.path.join(temp_dir, "input.hwp")
         try:
+            logger.info("HTML → HWP 직접 변환 시도...")
             result = subprocess.run(
                 [
                     soffice_path,
@@ -736,32 +1137,70 @@ def html_to_hwp_with_libreoffice(html_content: str, output_path: Optional[str] =
                 timeout=60
             )
             
-            if result.returncode != 0:
+            if result.returncode == 0 and os.path.exists(hwp_path):
+                with open(hwp_path, "rb") as f:
+                    hwp_content = f.read()
+                
+                if output_path:
+                    with open(output_path, 'wb') as f:
+                        f.write(hwp_content)
+                
+                logger.info("✅ HTML → HWP 직접 변환 성공")
+                return hwp_content
+            else:
+                logger.warning(f"HTML → HWP 직접 변환 실패: {result.stderr or result.stdout}")
+        except Exception as e:
+            logger.warning(f"HTML → HWP 직접 변환 시도 실패: {str(e)}")
+        
+        # 방법 2: HTML → DOCX로 변환 (LibreOffice는 HWP 변환을 지원하지 않음)
+        # HWP는 한글과컴퓨터의 독점 포맷이므로 LibreOffice로는 변환 불가
+        # 대신 DOCX로 변환하여 반환 (한글에서 열 수 있음)
+        try:
+            logger.info("LibreOffice는 HWP 변환을 지원하지 않습니다. HTML → DOCX로 변환합니다...")
+            # HTML → DOCX
+            docx_path = os.path.join(temp_dir, "input.docx")
+            result1 = subprocess.run(
+                [
+                    soffice_path,
+                    "--headless",
+                    "--convert-to", "docx",
+                    "--outdir", temp_dir,
+                    html_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result1.returncode != 0 or not os.path.exists(docx_path):
                 raise RuntimeError(
-                    f"HTML → HWP 변환 실패 (exit code {result.returncode}): {result.stderr or result.stdout}"
+                    f"HTML → DOCX 변환 실패 (exit code {result1.returncode}): {result1.stderr or result1.stdout}"
                 )
             
-            # 변환된 HWP 파일 읽기
-            hwp_path = os.path.join(temp_dir, "input.hwp")
-            if not os.path.exists(hwp_path):
-                raise RuntimeError(
-                    f"HWP 파일이 생성되지 않았습니다. 생성된 파일: {os.listdir(temp_dir)}"
-                )
+            logger.info("✅ HTML → DOCX 변환 성공 (HWP는 LibreOffice에서 지원하지 않으므로 DOCX 반환)")
             
-            with open(hwp_path, "rb") as f:
-                hwp_content = f.read()
+            # DOCX 파일 반환 (HWP 대신)
+            with open(docx_path, "rb") as f:
+                docx_content = f.read()
             
             if output_path:
+                # 출력 경로가 있으면 .hwp 확장자를 .docx로 변경
+                if output_path.endswith('.hwp'):
+                    output_path = output_path[:-4] + '.docx'
                 with open(output_path, 'wb') as f:
-                    f.write(hwp_content)
+                    f.write(docx_content)
             
-            print(f"✅ HTML → HWP 변환 성공 (LibreOffice)")
-            return hwp_content
-            
+            logger.warning("⚠️ HWP 변환은 LibreOffice에서 지원하지 않습니다. DOCX 파일을 반환합니다.")
+            logger.warning("   한글(HWP)에서 DOCX 파일을 열어서 HWP로 저장할 수 있습니다.")
+            return docx_content
+                
         except subprocess.TimeoutExpired:
-            raise RuntimeError("HTML → HWP 변환 시간 초과 (60초)")
+            raise RuntimeError("HTML → DOCX 변환 시간 초과 (60초)")
         except Exception as e:
-            raise RuntimeError(f"HTML → HWP 변환 중 오류: {str(e)}")
+            raise RuntimeError(
+                f"HTML → DOCX 변환 중 오류: {str(e)}\n"
+                f"참고: LibreOffice는 HWP 변환을 지원하지 않습니다. DOCX로 변환을 시도했습니다."
+            )
 
 
 def mark_modified_text_in_html(html_content: str, modified_texts: list, extracted_texts: list = None) -> str:
@@ -838,9 +1277,12 @@ def convert_html_document(
     output_format_lower = output_format.lower()
     
     if output_format_lower == "pdf":
+        # PDF 변환: WeasyPrint 직접 사용 (더 빠르고 안정적)
+        logger.info("PDF 변환: WeasyPrint 직접 사용")
         return html_to_pdf(html_content, output_path)
     elif output_format_lower == "docx":
-        return html_to_docx_with_libreoffice(html_content, output_path)
+        logger.info("convert_html_document: DOCX 변환 요청")
+        return html_to_docx(html_content, output_path)
     elif output_format_lower == "hwp":
         return html_to_hwp_with_libreoffice(html_content, output_path)
     else:
