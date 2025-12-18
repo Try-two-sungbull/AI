@@ -24,7 +24,7 @@ def create_extraction_task(agent, document_text: str) -> Task:
         {document_text}
 
         추출해야 할 정보:
-        1. project_name: 사업명
+        1. project_name: 문서의 제목 (구매계획서의 제목이 공고명이 됨. 예: "실내공기질 자동측정망 가스상 측정장비 구매 계획(안)")
         2. item_name: 품목명
         3. estimated_amount: 추정 금액 (숫자로, 원 단위, VAT 제외)
         4. total_budget_vat: 총 예산 (VAT 포함)

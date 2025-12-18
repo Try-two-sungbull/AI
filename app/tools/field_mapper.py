@@ -122,8 +122,8 @@ class FieldMapper:
         derived["announcement_date"] = today.strftime("%Y년 %m월 %d일")
         derived["announcement_number"] = f"공고 제{today.year}-{today.month:02d}-{today.day:02d}호"
         
-        # 공고명 (구매계획서의 item_name 또는 project_name)
-        derived["announcement_name"] = extracted_data.get("item_name") or extracted_data.get("project_name", "")
+        # 공고명 (구매계획서의 제목인 project_name을 우선 사용, 없으면 item_name 사용)
+        derived["announcement_name"] = extracted_data.get("project_name") or extracted_data.get("item_name", "")
         
         # 용역기간 (계약기간 또는 납품기한)
         contract_period = extracted_data.get("contract_period", "")
@@ -144,7 +144,7 @@ class FieldMapper:
         
         # 구매범위
         item_name = extracted_data.get("item_name", "")
-        derived["purchase_scope"] = f"물품규격서 및 붙임 참조" if item_name else "물품규격서 참조"
+        derived["purchase_scope"] = "물품규격서 등 참조"
         
         # 전자입찰서 제출기간 (공고 방식에 따라 계산)
         if contract_method == "소액수의":
@@ -223,44 +223,85 @@ class FieldMapper:
         
         # ===== 3. 입찰참가자격 =====
         
-        # G2B 등록 요건 (고정값)
-        derived["g2b_registration_requirement"] = (
-            "국가종합전자조달시스템 입찰참가자격등록규정에 따라 "
-            "전자입찰서 제출 마감일 전일까지 나라장터(G2B)에 입찰참가자격을 등록한 자"
-        )
-        
         # 세부품명번호 (구매계획서에서 추출)
         detail_item_codes = extracted_data.get("detail_item_codes", [])
+        
+        # item_codes.json에서 품목명 조회 (중소기업자간 경쟁제품 확인)
+        from app.utils.item_code_loader import get_item_code_loader
+        item_code_loader = get_item_code_loader()
+        
+        # G2B 등록 요건 + 직접생산확인증명서 (세부품명번호가 있고, 경쟁제품일 때만)
         if detail_item_codes:
-            # 실제로는 나라장터 API에서 품명 조회 필요
             code = detail_item_codes[0]
-            derived["detail_item_code_with_name"] = (
-                f"[세부품명번호: {code}(품명)] 제조 또는 공급물품으로 등록된 자"
-            )
+            # item_codes.json에서 품목명 조회
+            item_name_from_db = item_code_loader.get_item_name(code)
+            # extracted_data에서 품목명 가져오기 (fallback)
+            item_name_from_extracted = extracted_data.get("item_name", "")
+            # 우선순위: item_codes.json > extracted_data의 item_name
+            item_name = item_name_from_db or item_name_from_extracted
+            
+            # item_codes.json에 있으면 중소기업자간 경쟁제품 → 직접생산확인증명서 생성
+            if item_name_from_db:
+                # 직접생산확인증명서 문구 생성
+                direct_production_text = (
+                    f"❍ 중소기업제품 구매촉진 및 판로지원에 관한법률 제9조 및 동법 시행규칙 제5조 규정에 "
+                    f"의한 직접생산확인증명서[세부품명번호: {item_name_from_db}({code})]"
+                    f"(개찰일 전일까지 발급된 것으로 유효기간 내에 있어야 함)를 소지한 자"
+                )
+                
+                derived["g2b_registration_requirement"] = (
+                    "국가종합전자조달시스템 입찰참가자격등록규정에 따라 반드시 전자입찰서 제출 마감일 전일까지 "
+                    "나라장터(G2B)시스템에 아래의 사항을 모두 입찰참가자격으로 등록한 자\n"
+                    f"{direct_production_text}"
+                )
+            else:
+                # 경쟁제품이 아니더라도 세부품명번호가 있으면 "아래의 사항을 모두..." 문구 필요
+                derived["g2b_registration_requirement"] = (
+                    "국가종합전자조달시스템 입찰참가자격등록규정에 따라 반드시 전자입찰서 제출 마감일 전일까지 "
+                    "나라장터(G2B)시스템에 아래의 사항을 모두 입찰참가자격으로 등록한 자"
+                )
+            
+            # 세부품명번호 등록 요건 (품목명이 있으면 포함, 없으면 세부품명번호만)
+            if item_name:
+                derived["detail_item_code_with_name"] = (
+                    f"❍ 입찰참가 등록 마감일 기준 {item_name}(세부품명번호 {code})를 제조 또는 공급 물품으로 "
+                    f"입찰참가 등록한 자"
+                )
+            else:
+                derived["detail_item_code_with_name"] = (
+                    f"❍ 입찰참가 등록 마감일 기준 세부품명번호 {code}를 제조 또는 공급 물품으로 "
+                    f"입찰참가 등록한 자"
+                )
         else:
+            # 세부품명번호가 없으면 기본 G2B 등록 요건만
+            derived["g2b_registration_requirement"] = (
+                "국가종합전자조달시스템 입찰참가자격등록규정에 따라 "
+                "전자입찰서 제출 마감일 전일까지 나라장터(G2B)에 입찰참가자격을 등록한 자"
+            )
             derived["detail_item_code_with_name"] = ""
         
         # 업종코드 (구매계획서에서 추출)
         industry_codes = extracted_data.get("industry_codes", [])
         if industry_codes:
-            # 실제로는 나라장터 API에서 업종명 조회 필요
+            from app.utils.industry_api_client import get_industry_api_client
+            industry_api = get_industry_api_client()
             code = industry_codes[0]
-            derived["industry_code_with_name"] = (
-                f"「법령명」 조항에 의한 업종명(업종코드: {code})"
-            )
+            derived["industry_code_with_name"] = industry_api.format_industry_text(code)
         else:
             derived["industry_code_with_name"] = ""
         
         # 중소기업 제한 상세 문구
         if sme_restriction == "소기업_소상공인":
             derived["sme_restriction_detail"] = (
-                "「중소기업기본법」 제2조에 따른 소기업 또는 "
-                "「소상공인 보호 및 지원에 관한 법률」제2조에 따른 소상공인"
+                "「중소기업기본법」 제2조에 따른 소기업 또는 「소상공인 보호 및 지원에 관한 법률」 제2조에 따른 소상공인으로서 "
+                "「중소기업 범위 및 확인에 관한 규정」에 따라 발급된 소기업·소상공인확인서 "
+                "(전자입찰서 제출마감일 전일까지 발급된 것으로 유효기간내 있어야 함)를 소지한 업체이어야 합니다."
             )
         elif sme_restriction == "중소기업_소상공인":
             derived["sme_restriction_detail"] = (
-                "「중소기업기본법」 제2조에 따른 중소기업 또는 "
-                "「소상공인 보호 및 지원에 관한 법률」제2조에 따른 소상공인"
+                "「중소기업기본법」 제2조에 따른 중소기업 또는 「소상공인 보호 및 지원에 관한 법률」 제2조에 따른 소상공인으로서 "
+                "「중소기업 범위 및 확인에 관한 규정」에 따라 발급된 소기업·소상공인확인서 "
+                "(전자입찰서 제출마감일 전일까지 발급된 것으로 유효기간내 있어야 함)를 소지한 업체이어야 합니다."
             )
         else:
             derived["sme_restriction_detail"] = ""
@@ -313,7 +354,7 @@ class FieldMapper:
             derived["award_decision_method"] = "최저가 입찰자를 낙찰자로 결정합니다."
         
         derived["same_price_handling"] = (
-            "국가계약법시행령 제47조 규정에 의거 낙찰자를 결정합니다."
+            "낙찰이 될 수 있는 동일가격으로 견적 제출한 자가 2인 이상일 때에는 국가계약법 시행령 제47조 규정에 의거 낙찰자를 결정합니다."
         )
         
         # ===== 6. 적격심사 자료제출 =====

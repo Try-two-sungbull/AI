@@ -112,7 +112,45 @@ class BiddingDocumentCrew:
         
         # 결과를 JSON으로 파싱
         try:
-            classification = json.loads(str(result))
+            result_str = str(result)
+            # JSON 문자열 직접 파싱 시도
+            try:
+                classification = json.loads(result_str)
+            except json.JSONDecodeError:
+                # JSON 파싱 실패 시 raw_output에서 JSON 추출 시도
+                import re
+                # ```json ... ``` 블록 찾기
+                json_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', result_str, re.DOTALL)
+                if json_block_match:
+                    try:
+                        classification = json.loads(json_block_match.group(1))
+                    except json.JSONDecodeError:
+                        # 중첩된 JSON 찾기 시도
+                        pass
+                
+                # 아직 파싱되지 않았다면 {...} 패턴 찾기
+                if 'classification' not in locals() or not isinstance(classification, dict):
+                    # 첫 번째 { 부터 시작하는 JSON 객체 찾기
+                    brace_start = result_str.find('{')
+                    if brace_start != -1:
+                        brace_count = 0
+                        brace_end = brace_start
+                        for i in range(brace_start, len(result_str)):
+                            if result_str[i] == '{':
+                                brace_count += 1
+                            elif result_str[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    brace_end = i + 1
+                                    break
+                        
+                        if brace_end > brace_start:
+                            try:
+                                classification = json.loads(result_str[brace_start:brace_end])
+                            except json.JSONDecodeError:
+                                raise json.JSONDecodeError("No valid JSON found in result", result_str, 0)
+                    else:
+                        raise json.JSONDecodeError("No JSON found in result", result_str, 0)
             
             # Agent 결과 검증: 금액이 0이면 fallback 사용
             if classification.get("estimated_price_exc_vat") == 0 or classification.get("total_budget_vat") == 0:
@@ -142,8 +180,19 @@ class BiddingDocumentCrew:
             
             # 데이터 타입 정규화 (ExtractedData 스키마에 맞게)
             # qualification_notes가 리스트인 경우 문자열로 변환
-            if "qualification_notes" in parsed_data and isinstance(parsed_data["qualification_notes"], list):
-                parsed_data["qualification_notes"] = "\n".join(str(item) for item in parsed_data["qualification_notes"])
+            if "qualification_notes" in parsed_data:
+                if isinstance(parsed_data["qualification_notes"], list):
+                    parsed_data["qualification_notes"] = "\n".join(str(item) for item in parsed_data["qualification_notes"])
+                elif isinstance(parsed_data["qualification_notes"], dict):
+                    # dict인 경우 JSON 문자열로 변환하거나 값들을 조합
+                    try:
+                        parsed_data["qualification_notes"] = json.dumps(parsed_data["qualification_notes"], ensure_ascii=False)
+                    except:
+                        # JSON 직렬화 실패 시 키-값 쌍을 문자열로 변환
+                        parsed_data["qualification_notes"] = "\n".join(f"{k}: {v}" for k, v in parsed_data["qualification_notes"].items())
+                elif not isinstance(parsed_data["qualification_notes"], str):
+                    # 그 외의 타입이면 문자열로 변환
+                    parsed_data["qualification_notes"] = str(parsed_data["qualification_notes"])
             
             # detail_item_codes와 industry_codes가 문자열인 경우 리스트로 변환
             if "detail_item_codes" in parsed_data:

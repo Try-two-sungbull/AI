@@ -56,6 +56,9 @@ uploads/
 CLAUDE.md
 README.md
 
+# JSON data files (item_codes.json은 포함해야 함)
+# item_codes.json은 제외하지 않음 (필수 파일)
+
 # OS
 .DS_Store
 Thumbs.db

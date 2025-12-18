@@ -53,6 +53,10 @@ python-docx>=1.1.0
 python-multipart>=0.0.9
 olefile>=0.46          # HWP 파싱
 chardet>=5.0.0          # 인코딩 자동 감지
+pdf2image>=1.16.0       # PDF를 이미지로 변환 (Claude Vision API용)
+PyMuPDF>=1.23.0         # PDF 이미지 변환 대체 방법 (pdf2image fallback)
+Pillow>=10.0.0          # 이미지 처리 (pdf2image 의존성)
+anthropic>=0.25.0       # Claude API 직접 호출 (Vision API용)
 # pyhwpx>=1.0.0         # HWPX 템플릿 치환 (Windows 전용, 도커에서는 제외)
 
 # -------------------------
