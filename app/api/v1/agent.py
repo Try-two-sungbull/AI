@@ -634,7 +634,6 @@ async def retrieve_template(
                 "id": t.id,
                 "template_type": t.template_type,
                 "version": t.version,
-                "summary": t.summary,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             }
             for t in templates
