@@ -27,7 +27,7 @@ from app.models.schemas import UserFeedback, SaveTemplateRequest, ExtractedData,
 from app.services.crew_service import BiddingDocumentCrew
 from app.services.nara_bid_service import get_latest_bid_notice
 from app.utils.document_parser import parse_document
-from app.utils.document_converter import convert_document
+from app.utils.document_converter import convert_document, convert_html_document
 from app.config import get_settings
 
 from sqlalchemy.orm import Session
@@ -1032,6 +1032,108 @@ async def classify_only(
         if session_id in agent_sessions:
             agent_sessions[session_id].add_error(str(e))
         raise HTTPException(status_code=400, detail=f"분류 실패: {str(e)}")
+
+
+@router.post("/convert-html")
+async def convert_html(
+    request: Request,
+    format: str = Query("pdf", description="출력 형식: pdf, docx, hwp")
+):
+    """
+    HTML 완성본을 PDF/DOCX/HWP로 변환 (다운로드 가능)
+    
+    - HTML에서 수정/추출된 부분은 파란색으로 표시됨
+    - PDF: weasyprint 사용 (스타일 완벽 유지)
+    - DOCX: LibreOffice 사용 (스타일 대부분 유지)
+    - HWP: LibreOffice 사용 (스타일 일부 유지)
+    
+    Args:
+        request: Request 객체 (body에 HTML 텍스트)
+        format: 출력 형식 (pdf, docx, hwp)
+    
+    Returns:
+        변환된 파일 (FileResponse) - 브라우저에서 자동 다운로드
+    
+    Example (JavaScript/Fetch):
+        ```javascript
+        const html = '<!DOCTYPE html><html><body><p>테스트</p></body></html>';
+        
+        const response = await fetch('http://localhost:8000/api/v1/agent/convert-html?format=pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/html' },
+            body: html
+        });
+        
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '문서.pdf';
+        a.click();
+        ```
+    
+    Example (Python):
+        ```python
+        import requests
+        
+        html = '<!DOCTYPE html><html><body><p>테스트</p></body></html>'
+        
+        response = requests.post(
+            "http://localhost:8000/api/v1/agent/convert-html?format=pdf",
+            data=html,
+            headers={"Content-Type": "text/html"}
+        )
+        
+        with open("output.pdf", "wb") as f:
+            f.write(response.content)
+        ```
+    """
+    try:
+        # Request body에서 HTML 읽기
+        html_content = await request.body()
+        html_content = html_content.decode("utf-8")
+        
+        if not html_content or not html_content.strip():
+            raise HTTPException(status_code=400, detail="HTML 내용이 비어있습니다.")
+        
+        # HTML을 지정된 형식으로 변환
+        file_bytes = convert_html_document(html_content, format.lower())
+        
+        # 파일 확장자 및 MIME 타입 설정
+        format_map = {
+            "pdf": ("pdf", "application/pdf"),
+            "docx": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "hwp": ("hwp", "application/x-hwp")
+        }
+        
+        if format.lower() not in format_map:
+            raise ValueError(f"지원하지 않는 형식: {format}. 'pdf', 'docx', 또는 'hwp'를 사용하세요.")
+        
+        extension, media_type = format_map[format.lower()]
+        filename = f"문서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}"
+        
+        # 임시 파일 생성
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{extension}") as tmp_file:
+            tmp_file.write(file_bytes)
+            tmp_path = tmp_file.name
+        
+        # FileResponse로 반환 (브라우저에서 자동 다운로드)
+        return FileResponse(
+            tmp_path,
+            media_type=media_type,
+            filename=filename,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"HTML 변환 실패: {str(e)}"
+        )
 
 
 @router.get("/debug/{session_id}")
