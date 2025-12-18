@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y \
     fonts-nanum \
     # pdf2image를 위한 poppler-utils
     poppler-utils \
+    # LibreOffice (HTML → DOCX/HWP 변환용)
+    libreoffice \
+    libreoffice-writer \
     # 기타 유틸리티
     git \
     && rm -rf /var/lib/apt/lists/*

@@ -265,7 +265,8 @@ class BiddingDocumentCrew:
         template_id: str = None,
         announcement_type: str = None,
         law_references: str = "",
-        template_info: Dict[str, Any] = None
+        template_info: Dict[str, Any] = None,
+        output_format: str = "markdown"
     ) -> str:
         """
         STEP 4: Document Assembly (Non-LLM Pipeline 단계)
