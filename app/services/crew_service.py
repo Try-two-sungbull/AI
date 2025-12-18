@@ -9,12 +9,14 @@ logger = logging.getLogger(__name__)
 
 from .agents import (
     create_extractor_agent,
+    create_extractor_agent_openai,
     create_classifier_agent,
     create_generator_agent,
     create_validator_agent
 )
 from .tasks import (
     create_extraction_task,
+    create_cross_reflection_task,
     create_classification_task,
     create_generation_task,
     create_validation_task,
@@ -44,45 +46,287 @@ class BiddingDocumentCrew:
         self.generator = create_generator_agent()
         self.validator = create_validator_agent()
 
-    def run_extraction(self, document_text: str) -> Dict[str, Any]:
+    def _check_missing_fields(self, extracted_data: Dict[str, Any]) -> List[str]:
         """
-        STEP 2: 문서에서 정보 추출
-
+        추출된 데이터에서 미싱된 필수 필드 확인
+        
         Returns:
-            ExtractedData 형식의 딕셔너리
+            미싱된 필드명 리스트
         """
-        task = create_extraction_task(self.extractor, document_text)
-
-        crew = Crew(
-            agents=[self.extractor],
-            tasks=[task],
-            process=Process.sequential,
-            verbose=True
-        )
-
-        result = crew.kickoff()
-
-        # 결과를 JSON으로 파싱
+        from app.models.schemas import ExtractedData
+        
+        missing_fields = []
+        
+        # 필수 필드 또는 중요한 필드 체크
+        important_fields = [
+            "project_name",
+            "item_name", 
+            "estimated_amount",
+            "total_budget_vat",
+            "procurement_type",
+            "procurement_method_raw"
+        ]
+        
+        for field in important_fields:
+            value = extracted_data.get(field)
+            # None, 빈 문자열, 빈 리스트, 0인 경우 미싱으로 간주
+            if value is None or value == "" or value == [] or value == 0:
+                missing_fields.append(field)
+        
+        return missing_fields
+    
+    def _parse_extraction_result(self, result) -> Dict[str, Any]:
+        """
+        Agent 추출 결과를 JSON으로 파싱
+        
+        Returns:
+            파싱된 딕셔너리
+        """
+        import re
+        
         try:
             extracted_data = json.loads(str(result))
         except json.JSONDecodeError:
             # JSON 파싱 실패 시 raw_output에서 JSON 추출 시도
-            import re
             result_str = str(result)
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', result_str, re.DOTALL)
             if json_match:
                 try:
                     extracted_data = json.loads(json_match.group(1))
                 except json.JSONDecodeError:
-                    extracted_data = {"raw_output": result_str}
+                    # 중첩된 JSON 찾기 시도
+                    brace_start = result_str.find('{')
+                    if brace_start != -1:
+                        brace_count = 0
+                        brace_end = brace_start
+                        for i in range(brace_start, len(result_str)):
+                            if result_str[i] == '{':
+                                brace_count += 1
+                            elif result_str[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    brace_end = i + 1
+                                    break
+                        
+                        if brace_end > brace_start:
+                            try:
+                                extracted_data = json.loads(result_str[brace_start:brace_end])
+                            except json.JSONDecodeError:
+                                extracted_data = {"raw_output": result_str}
+                    else:
+                        extracted_data = {"raw_output": result_str}
             else:
                 extracted_data = {"raw_output": result_str}
+        
+        return extracted_data
+
+    def run_extraction(self, document_text: str, use_reflection: bool = True) -> Dict[str, Any]:
+        """
+        STEP 2: 문서에서 정보 추출 (Claude + OpenAI 이중 추출 + 상호 리플렉션)
+
+        프로세스:
+        1. Claude로 먼저 추출
+        2. 미싱 정보 체크
+        3. 미싱이 있으면 OpenAI로도 추출
+        4. 상호 리플렉션으로 통합
+        5. 최종 결과 반환
+
+        Returns:
+            ExtractedData 형식의 딕셔너리
+        """
+        print("\n" + "="*60)
+        print("📄 STEP 2: 문서 정보 추출 시작")
+        print("="*60)
+        
+        # 1. Claude로 먼저 추출
+        print("\n🔵 [1단계] Claude Extractor 실행...")
+        task_claude = create_extraction_task(self.extractor, document_text)
+        
+        crew_claude = Crew(
+            agents=[self.extractor],
+            tasks=[task_claude],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        result_claude = crew_claude.kickoff()
+        claude_data = self._parse_extraction_result(result_claude)
+        
+        print(f"✅ Claude 추출 완료")
+        print(f"   - 추출된 필드 수: {len([k for k, v in claude_data.items() if v and k != 'raw_output'])}")
+        
+        # 2. 미싱 정보 체크 및 리플렉션 (use_reflection이 True일 때만)
+        if not use_reflection:
+            print(f"\n⏭️ 리플렉션 비활성화: Claude 추출 결과만 사용")
+            final_data = claude_data
+        else:
+            missing_fields = self._check_missing_fields(claude_data)
+            
+            if not missing_fields:
+                print(f"\n✅ 모든 필수 필드가 추출되었습니다. 상호 리플렉션 생략.")
+                final_data = claude_data
+            else:
+                print(f"\n⚠️ 미싱 필드 발견: {', '.join(missing_fields)}")
+                print(f"🔄 OpenAI Extractor로 보완 추출 시작...")
+                
+                # 3. OpenAI로도 추출
+                openai_extractor = create_extractor_agent_openai()
+                task_openai = create_extraction_task(openai_extractor, document_text)
+                
+                crew_openai = Crew(
+                    agents=[openai_extractor],
+                    tasks=[task_openai],
+                    process=Process.sequential,
+                    verbose=True
+                )
+                
+                result_openai = crew_openai.kickoff()
+                openai_data = self._parse_extraction_result(result_openai)
+                
+                print(f"✅ OpenAI 추출 완료")
+                print(f"   - 추출된 필드 수: {len([k for k, v in openai_data.items() if v and k != 'raw_output'])}")
+                
+                # 4. 상호 리플렉션으로 통합
+                print(f"\n🔄 [2단계] 상호 리플렉션 시작 (Claude + OpenAI 결과 통합)...")
+                
+                # 리플렉션 Agent는 Validator를 재사용 (비교/검증 역할)
+                reflection_agent = create_validator_agent()
+                reflection_task = create_cross_reflection_task(
+                    reflection_agent,
+                    claude_data,
+                    openai_data,
+                    document_text
+                )
+                
+                crew_reflection = Crew(
+                    agents=[reflection_agent],
+                    tasks=[reflection_task],
+                    process=Process.sequential,
+                    verbose=True
+                )
+                
+                result_reflection = crew_reflection.kickoff()
+                final_data = self._parse_extraction_result(result_reflection)
+                
+                print(f"✅ 상호 리플렉션 완료")
+                print(f"   - 최종 필드 수: {len([k for k, v in final_data.items() if v and k != 'raw_output'])}")
+                
+                # 미싱 필드가 보완되었는지 확인
+                remaining_missing = self._check_missing_fields(final_data)
+                if remaining_missing:
+                    print(f"⚠️ 여전히 미싱 필드: {', '.join(remaining_missing)}")
+                else:
+                    print(f"✅ 모든 필수 필드가 보완되었습니다!")
+        
+        # ExtractedData 모델에 정의된 필드만 필터링
+        from app.models.schemas import ExtractedData
+        valid_fields = set(ExtractedData.model_fields.keys())
+        filtered_data = {k: v for k, v in final_data.items() if k in valid_fields}
+        
+        # 데이터 타입 정규화 (ExtractedData 스키마에 맞게)
+        # qualification_notes가 dict인 경우 문자열로 변환
+        if "qualification_notes" in filtered_data:
+            if isinstance(filtered_data["qualification_notes"], dict):
+                try:
+                    filtered_data["qualification_notes"] = json.dumps(filtered_data["qualification_notes"], ensure_ascii=False)
+                except:
+                    # JSON 직렬화 실패 시 키-값 쌍을 문자열로 변환
+                    filtered_data["qualification_notes"] = "\n".join(f"{k}: {v}" for k, v in filtered_data["qualification_notes"].items())
+            elif isinstance(filtered_data["qualification_notes"], list):
+                filtered_data["qualification_notes"] = "\n".join(str(item) for item in filtered_data["qualification_notes"])
+            elif not isinstance(filtered_data["qualification_notes"], str) and filtered_data["qualification_notes"] is not None:
+                filtered_data["qualification_notes"] = str(filtered_data["qualification_notes"])
+        
+        # restricted_region이 리스트인 경우 문자열로 변환
+        if "restricted_region" in filtered_data:
+            if isinstance(filtered_data["restricted_region"], list):
+                filtered_data["restricted_region"] = ", ".join(str(item) for item in filtered_data["restricted_region"])
+        
+        # detail_item_codes와 industry_codes가 문자열인 경우 리스트로 변환
+        if "detail_item_codes" in filtered_data:
+            if isinstance(filtered_data["detail_item_codes"], str):
+                filtered_data["detail_item_codes"] = [filtered_data["detail_item_codes"]] if filtered_data["detail_item_codes"] else []
+            elif filtered_data["detail_item_codes"] is None:
+                filtered_data["detail_item_codes"] = []
+                
+        if "industry_codes" in filtered_data:
+            if isinstance(filtered_data["industry_codes"], str):
+                filtered_data["industry_codes"] = [filtered_data["industry_codes"]] if filtered_data["industry_codes"] else []
+            elif filtered_data["industry_codes"] is None:
+                filtered_data["industry_codes"] = []
+            
+            # 업종코드 검증 및 변환: 숫자 코드만 유지, 업종명은 API로 조회
+            if isinstance(filtered_data["industry_codes"], list):
+                validated_codes = []
+                industry_names_to_lookup = []  # API 조회가 필요한 업종명들
+                
+                for code in filtered_data["industry_codes"]:
+                    code_str = str(code).strip()
+                    # 숫자로만 이루어진 코드만 유지 (예: "12345", "67890")
+                    if code_str and code_str.isdigit():
+                        validated_codes.append(code_str)
+                    elif code_str and any(char.isdigit() for char in code_str):
+                        # 숫자가 포함된 경우 숫자 부분만 추출 시도
+                        import re
+                        numbers = re.findall(r'\d+', code_str)
+                        if numbers:
+                            validated_codes.extend(numbers)
+                        else:
+                            # 숫자가 없으면 업종명으로 간주
+                            industry_names_to_lookup.append(code_str)
+                    else:
+                        # 숫자가 없으면 업종명으로 간주
+                        industry_names_to_lookup.append(code_str)
+                
+                # 업종명으로 업종코드 조회
+                if industry_names_to_lookup:
+                    print(f"🔍 업종명으로 업종코드 조회 시작 (총 {len(industry_names_to_lookup)}개): {industry_names_to_lookup}")
+                    from app.utils.industry_api_client import get_industry_api_client
+                    api_client = get_industry_api_client()
+                    
+                    success_count = 0
+                    for idx, industry_name in enumerate(industry_names_to_lookup, 1):
+                        # 업종명에서 불필요한 단어 제거 (예: "업종코드", "업종" 등)
+                        cleaned_name = industry_name.replace("업종코드", "").replace("업종", "").strip()
+                        if not cleaned_name:
+                            print(f"  [{idx}/{len(industry_names_to_lookup)}] 업종명이 비어있어 건너뜁니다.")
+                            continue
+                        
+                        print(f"  [{idx}/{len(industry_names_to_lookup)}] '{cleaned_name}' 조회 중...")
+                        industry_code = api_client.get_industry_code_by_name(cleaned_name)
+                        if industry_code:
+                            validated_codes.append(industry_code)
+                            success_count += 1
+                            print(f"    ✅ 업종명 '{cleaned_name}' → 업종코드 '{industry_code}' 조회 성공")
+                        else:
+                            print(f"    ⚠️ 업종명 '{cleaned_name}'에 대한 업종코드를 찾을 수 없습니다.")
+                    
+                    print(f"📊 업종코드 조회 완료: 성공 {success_count}/{len(industry_names_to_lookup)}개")
+                
+                if validated_codes:
+                    filtered_data["industry_codes"] = list(set(validated_codes))  # 중복 제거
+                    print(f"✅ 업종코드 최종 결과: {filtered_data['industry_codes']}")
+                else:
+                    # 숫자 코드가 없으면 null로 설정
+                    filtered_data["industry_codes"] = None
+                    print(f"⚠️ 업종코드 번호를 찾을 수 없어 null로 설정했습니다.")
+        
+        # procurement_type이 비어있으면 기본값 설정
+        if not filtered_data.get("procurement_type"):
+            filtered_data["procurement_type"] = "물품"
+        
+        print(f"\n📊 최종 추출 결과 요약:")
+        print(f"   - project_name: {filtered_data.get('project_name', 'N/A')}")
+        print(f"   - item_name: {filtered_data.get('item_name', 'N/A')}")
+        print(f"   - total_budget_vat: {filtered_data.get('total_budget_vat', 'N/A')}")
+        print(f"   - procurement_type: {filtered_data.get('procurement_type', 'N/A')}")
+        print("="*60 + "\n")
 
         # AgentState 업데이트
-        self.state.extracted_data = extracted_data
+        self.state.extracted_data = filtered_data
         self.state.transition_to("classify")
 
-        return extracted_data
+        return filtered_data
 
     def run_classification(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -117,6 +361,18 @@ class BiddingDocumentCrew:
         # 결과를 JSON으로 파싱
         try:
             result_str = str(result)
+            
+            # 디버깅: 결과 내용 확인
+            print(f"\n🔍 Classifier Agent 원본 결과 (처음 500자):")
+            print(f"{result_str[:500]}")
+            if len(result_str) > 500:
+                print(f"... (총 {len(result_str)}자)")
+            
+            # 빈 응답 체크
+            if not result_str or result_str.strip() == "":
+                print("⚠️ Classifier Agent가 빈 응답을 반환했습니다.")
+                raise json.JSONDecodeError("Empty response from Classifier Agent", result_str, 0)
+            
             # JSON 문자열 직접 파싱 시도
             try:
                 classification = json.loads(result_str)
@@ -162,7 +418,15 @@ class BiddingDocumentCrew:
                 raise ValueError("Invalid classification result")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # JSON 파싱 실패 또는 유효하지 않은 결과 시 Rule Engine 직접 호출 (fallback)
-            print(f"⚠️ Classifier Agent 결과 파싱 실패 또는 유효하지 않음: {e}. Rule Engine 직접 호출...")
+            print(f"\n⚠️ Classifier Agent 결과 파싱 실패 또는 유효하지 않음: {e}")
+            print(f"   → Rule Engine 직접 호출로 전환 (fallback)...")
+            
+            # 디버깅: 실패한 결과 내용 출력
+            try:
+                result_str = str(result) if 'result' in locals() else "N/A"
+                print(f"   실패한 응답 내용: {result_str[:200]}...")
+            except:
+                pass
             from app.tools.rule_engine import get_rule_engine
             from app.models.schemas import ExtractedData
             
@@ -194,9 +458,14 @@ class BiddingDocumentCrew:
                     except:
                         # JSON 직렬화 실패 시 키-값 쌍을 문자열로 변환
                         parsed_data["qualification_notes"] = "\n".join(f"{k}: {v}" for k, v in parsed_data["qualification_notes"].items())
-                elif not isinstance(parsed_data["qualification_notes"], str):
+                elif not isinstance(parsed_data["qualification_notes"], str) and parsed_data["qualification_notes"] is not None:
                     # 그 외의 타입이면 문자열로 변환
                     parsed_data["qualification_notes"] = str(parsed_data["qualification_notes"])
+            
+            # restricted_region이 리스트인 경우 문자열로 변환
+            if "restricted_region" in parsed_data:
+                if isinstance(parsed_data["restricted_region"], list):
+                    parsed_data["restricted_region"] = ", ".join(str(item) for item in parsed_data["restricted_region"])
             
             # detail_item_codes와 industry_codes가 문자열인 경우 리스트로 변환
             if "detail_item_codes" in parsed_data:
@@ -211,24 +480,29 @@ class BiddingDocumentCrew:
                 elif parsed_data["industry_codes"] is None:
                     parsed_data["industry_codes"] = []
             
+            # ExtractedData 모델에 정의된 필드만 추출 (추가 필드 제거)
+            from app.models.schemas import ExtractedData
+            valid_fields = set(ExtractedData.model_fields.keys())
+            filtered_data = {k: v for k, v in parsed_data.items() if k in valid_fields}
+            
             try:
-                extracted_model = ExtractedData(**parsed_data)
+                extracted_model = ExtractedData(**filtered_data)
             except Exception as e:
                 print(f"⚠️ ExtractedData 변환 실패: {e}")
                 # 최소한의 필드로 ExtractedData 생성
                 extracted_model = ExtractedData(
-                    procurement_type=parsed_data.get("procurement_type", "물품"),
-                    total_budget_vat=parsed_data.get("total_budget_vat") or parsed_data.get("estimated_amount", 0),
-                    estimated_amount=parsed_data.get("estimated_amount", 0),
-                    item_name=parsed_data.get("item_name", ""),
-                    project_name=parsed_data.get("project_name", ""),
-                    delivery_deadline_days=parsed_data.get("delivery_deadline_days"),
-                    procurement_method_raw=parsed_data.get("procurement_method_raw", ""),
-                    detail_item_codes=parsed_data.get("detail_item_codes", []),
-                    industry_codes=parsed_data.get("industry_codes", []),
-                    is_joint_contract=parsed_data.get("is_joint_contract", False),
-                    has_region_restriction=parsed_data.get("has_region_restriction", False),
-                    qualification_notes=parsed_data.get("qualification_notes", "")
+                    procurement_type=filtered_data.get("procurement_type", "물품"),
+                    total_budget_vat=filtered_data.get("total_budget_vat") or filtered_data.get("estimated_amount", 0),
+                    estimated_amount=filtered_data.get("estimated_amount", 0),
+                    item_name=filtered_data.get("item_name", ""),
+                    project_name=filtered_data.get("project_name", ""),
+                    delivery_deadline_days=filtered_data.get("delivery_deadline_days"),
+                    procurement_method_raw=filtered_data.get("procurement_method_raw", ""),
+                    detail_item_codes=filtered_data.get("detail_item_codes", []),
+                    industry_codes=filtered_data.get("industry_codes", []),
+                    is_joint_contract=filtered_data.get("is_joint_contract", False),
+                    has_region_restriction=filtered_data.get("has_region_restriction", False),
+                    qualification_notes=filtered_data.get("qualification_notes", "")
                 )
             
             rule_engine = get_rule_engine()
