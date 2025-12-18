@@ -3,6 +3,11 @@ from datetime import datetime, timedelta
 from app.config import get_settings
 
 settings = get_settings()
+# 파일 저장 경로가 설정되어 있으면 디렉토리 생성 (PostgreSQL 사용 시 선택적)
+if hasattr(settings, 'file_storage_path') and settings.file_storage_path:
+    os.makedirs(settings.file_storage_path, exist_ok=True)
+
+
 
 def get_latest_bid_notice(days_ago: int = 3, cntrctCnclsMthdNm: str = None, limit: int = 1):
     """
@@ -24,7 +29,7 @@ def get_latest_bid_notice(days_ago: int = 3, cntrctCnclsMthdNm: str = None, limi
     start = start_date.strftime("%Y%m%d") + "0000"
     end = end_date.strftime("%Y%m%d") + "2359"
 
-    url = f"{settings.nara_base_url}/getBidPblancListInfoThng"  # 물품조회 API
+    url = settings.nara_base_url  # 나라장터 API URL (전체 URL 포함)
     params = {
         "serviceKey": settings.nara_api_key,
         "pageNo": 1,
