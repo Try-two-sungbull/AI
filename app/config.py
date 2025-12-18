@@ -4,6 +4,7 @@
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         # .env 파일을 명시적으로 로드
         case_sensitive = False
+        extra = "allow"  # 추가 필드 허용
+
+
 
 
 @lru_cache()
