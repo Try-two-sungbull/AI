@@ -1,11 +1,8 @@
-import os
 import requests
 from datetime import datetime, timedelta
 from app.config import get_settings
 
 settings = get_settings()
-os.makedirs(settings.file_storage_path, exist_ok=True)
-
 
 def get_latest_bid_notice(days_ago: int = 3, cntrctCnclsMthdNm: str = None, limit: int = 1):
     """
