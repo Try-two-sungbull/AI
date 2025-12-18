@@ -1,8 +1,28 @@
 # version은 최신 docker-compose에서 선택사항
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-bidding-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_bidding}
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+      TZ: Asia/Seoul
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: ai-bidding-agent
@@ -17,6 +37,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_bidding}
       # 환경 변수 명시적 전달 (env_file이 작동하지 않을 경우 대비)
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -35,6 +57,9 @@ services:
       # 설정하지 않으면: 크롤링 → 하드코딩 기본값 순으로 사용
       - NOTICE_AMOUNT=${NOTICE_AMOUNT:-}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -50,3 +75,6 @@ services:
         reservations:
           cpus: '1.0'
           memory: 2G
+
+volumes:
+  postgres_data:
