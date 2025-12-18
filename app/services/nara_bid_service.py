@@ -10,7 +10,7 @@ if hasattr(settings, 'file_storage_path') and settings.file_storage_path:
 
 
 
-def get_latest_bid_notice(days_ago: int = 3, cntrctCnclsMthdNm: str = None, limit: int = 1):
+def get_latest_bid_notice(days_ago: int = 7, cntrctCnclsMthdNm: str = None, limit: int = 1):
     """
     1️⃣ 최신 입찰공고 URL 조회
 

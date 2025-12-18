@@ -592,6 +592,87 @@ async def get_latest_template(
     }
 
 
+@router.get("/templates/retrieve")
+async def retrieve_template(
+    template_type: str = Query(..., description="템플릿 유형 (소액수의, 적격심사)"),
+    limit: int = Query(10, ge=1, le=50, description="조회할 템플릿 개수 (기본 10개, 최대 50개)"),
+    db: Session = Depends(get_db),
+):
+    """
+    템플릿 목록 조회 API (Template Retrieval - List)
+
+    - template_type 파라미터로 저장된 템플릿 최신 N개를 조회합니다.
+    - DB의 template_type 컬럼과 정확히 일치하는 템플릿을 조회합니다.
+    - created_at 기준 내림차순 정렬 (최신순)
+    - 목록에서는 내용(content)이 아닌 메타 정보(id, 버전, 요약, 생성일 등)만 반환합니다.
+
+    예)
+    - GET /templates/retrieve?template_type=소액수의&limit=10
+    - GET /templates/retrieve?template_type=적격심사&limit=5
+    """
+    # template_type으로 정확히 일치하는 템플릿 조회 (최신순 N개)
+    templates = (
+        db.query(NoticeTemplate)
+        .filter(NoticeTemplate.template_type == template_type)
+        .order_by(NoticeTemplate.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    if not templates:
+        raise HTTPException(
+            status_code=404,
+            detail=f"해당 template_type의 템플릿이 없습니다: {template_type}",
+        )
+
+    # 목록 응답 (content 제외)
+    return {
+        "total": len(templates),
+        "template_type": template_type,
+        "templates": [
+            {
+                "id": t.id,
+                "template_type": t.template_type,
+                "version": t.version,
+                "summary": t.summary,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in templates
+        ]
+    }
+
+
+@router.get("/templates/{template_id}")
+async def get_template_detail(
+    template_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    템플릿 상세 조회 API (Template Detail)
+
+    - 템플릿 ID로 단일 템플릿의 전체 내용을 조회합니다.
+    - 목록 API(`/templates/retrieve`)에서 받은 id를 사용하여 호출합니다.
+    """
+    template = db.query(NoticeTemplate).filter(NoticeTemplate.id == template_id).first()
+
+    if not template:
+        raise HTTPException(
+            status_code=404,
+            detail=f"해당 ID의 템플릿이 없습니다: {template_id}",
+        )
+
+    # category, method는 template_type 패턴(예: '물품-소액수의')에서 유추 가능하지만,
+    # 저장 규칙이 고정되지 않았을 수 있으므로 그대로 반환만 합니다.
+    return {
+        "id": template.id,
+        "template_type": template.template_type,
+        "version": template.version,
+        "summary": template.summary,
+        "created_at": template.created_at.isoformat() if template.created_at else None,
+        "content": template.content,
+    }
+
+
 @router.post("/templates/load-qualification")
 async def load_qualification_template(db: Session = Depends(get_db)):
     """
@@ -717,23 +798,47 @@ async def validate_template(
 
         print(f"✅ 총 {len(latest_docs)}개 공고문 파싱 완료")
 
-        # 3. 우리 템플릿 로드
-        from app.tools.template_selector import get_template_selector
-        from app.models.schemas import ClassificationResult
+        # 3. 우리 템플릿 로드 (DB에서 최신 버전)
+        print(f"📋 DB에서 최신 템플릿 조회 중... (유형: {cntrctCnclsMthdNm})")
 
-        template_selector = get_template_selector()
-
-        # 공고 유형을 ClassificationResult로 변환
-        classification_result = ClassificationResult(
-            recommended_type=cntrctCnclsMthdNm,
-            confidence=1.0,
-            reason="템플릿 검증용",
-            alternative_types=[]
+        latest_template = (
+            db.query(NoticeTemplate)
+            .filter(NoticeTemplate.template_type == cntrctCnclsMthdNm)
+            .order_by(NoticeTemplate.created_at.desc())
+            .first()
         )
 
-        template = template_selector.select_template(classification_result, preferred_format="md")
-        our_template_content = template.content
-        print(f"✅ 템플릿 로드 완료: {template.template_id}")
+        if not latest_template:
+            # DB에 없으면 파일 시스템에서 로드
+            print(f"⚠️ DB에 템플릿이 없어 파일 시스템에서 로드합니다")
+            from app.tools.template_selector import get_template_selector
+            from app.models.schemas import ClassificationResult
+
+            template_selector = get_template_selector()
+            classification_result = ClassificationResult(
+                recommended_type=cntrctCnclsMthdNm,
+                confidence=1.0,
+                reason="템플릿 검증용",
+                alternative_types=[]
+            )
+            template = template_selector.select_template(classification_result, preferred_format="md")
+            our_template_content = template.content
+            print(f"✅ 파일 템플릿 로드 완료: {template.template_id}")
+        else:
+            our_template_content = latest_template.content
+            print(f"✅ DB 템플릿 로드 완료: id={latest_template.id}, version={latest_template.version}, created_at={latest_template.created_at}")
+
+            # 디버깅: 템플릿에 주요 키워드가 포함되어 있는지 확인
+            keywords_to_check = [
+                ("예정가격 범위 내", "이미 업데이트된 표현"),
+                ("청렴계약 이행 서약", "청렴계약 섹션"),
+                ("예정가격 이하", "구버전 표현 (있으면 안됨)")
+            ]
+            print(f"🔍 템플릿 키워드 검사:")
+            for keyword, desc in keywords_to_check:
+                exists = keyword in our_template_content
+                status = "✅" if (keyword != "예정가격 이하" and exists) or (keyword == "예정가격 이하" and not exists) else "⚠️"
+                print(f"  {status} '{keyword}' ({desc}): {'포함됨' if exists else '없음'}")
 
         # 4. Agent로 여러 공고문 비교
         from app.services.agents import create_template_comparator_agent
@@ -741,83 +846,240 @@ async def validate_template(
         from crewai import Crew, Process
 
         comparator = create_template_comparator_agent()
-        comparison_task = create_multi_template_comparison_task(
-            comparator,
-            latest_docs,  # 여러 공고문 전달
-            our_template_content
-        )
 
-        crew = Crew(
-            agents=[comparator],
-            tasks=[comparison_task],
-            process=Process.sequential,
-            verbose=True
-        )
+        # 템플릿 버전 정보 전달
+        template_version = latest_template.version if latest_template else None
 
-        print("🔍 템플릿 비교 중...")
-        result = crew.kickoff()
+        # 4. 리플렉션 루프를 위한 변수 초기화
+        max_recheck_iterations = 2  # 최대 재검사 횟수
+        current_iteration = 0
+        recheck_guideline = None  # 재검사 지침
 
-        # 5. 결과 파싱
-        result_str = str(result)
-        print(f"🔍 Agent 응답 길이: {len(result_str)}자")
+        print("🔄 템플릿 검증 오케스트레이션 시작")
 
-        try:
-            comparison_result = json.loads(result_str)
-            print("✅ 직접 JSON 파싱 성공")
-        except json.JSONDecodeError as e:
-            print(f"⚠️ 직접 JSON 파싱 실패: {str(e)}")
-            # JSON 파싱 실패 시 텍스트에서 JSON 추출 시도
-            import re
+        while current_iteration < max_recheck_iterations:
+            current_iteration += 1
+            print(f"\n{'='*60}")
+            print(f"🔍 반복 {current_iteration}/{max_recheck_iterations}: 템플릿 비교 시작")
+            print(f"{'='*60}")
 
-            # 여러 패턴 시도 (전체 텍스트에서)
-            patterns = [
-                r'```json\s*(\{[\s\S]*\})\s*```',  # ```json {...} ``` (전체)
-                r'```\s*(\{[\s\S]*\})\s*```',      # ``` {...} ``` (전체)
-                r'(\{[\s\S]*\})',                   # { ... } (가장 큰 JSON)
-            ]
+            # 4.1. Comparator Agent 실행
+            comparison_task = create_multi_template_comparison_task(
+                comparator,
+                latest_docs,
+                our_template_content,
+                template_version=template_version,
+                recheck_guideline=recheck_guideline  # 재검사 지침 전달
+            )
 
-            for pattern in patterns:
-                json_match = re.search(pattern, result_str)
+            crew = Crew(
+                agents=[comparator],
+                tasks=[comparison_task],
+                process=Process.sequential,
+                verbose=True
+            )
+
+            result = crew.kickoff()
+
+            # 5. 결과 파싱
+            result_str = str(result)
+            print(f"🔍 Comparator Agent 응답 길이: {len(result_str)}자")
+
+            try:
+                comparison_result = json.loads(result_str)
+                print("✅ 직접 JSON 파싱 성공")
+            except json.JSONDecodeError as e:
+                print(f"⚠️ 직접 JSON 파싱 실패: {str(e)}")
+                # JSON 파싱 실패 시 텍스트에서 JSON 추출 시도
+                import re
+
+                # 여러 패턴 시도 (전체 텍스트에서)
+                patterns = [
+                    r'```json\s*(\{[\s\S]*\})\s*```',  # ```json {...} ``` (전체)
+                    r'```\s*(\{[\s\S]*\})\s*```',      # ``` {...} ``` (전체)
+                    r'(\{[\s\S]*\})',                   # { ... } (가장 큰 JSON)
+                ]
+
+                for pattern in patterns:
+                    json_match = re.search(pattern, result_str)
+                    if json_match:
+                        try:
+                            json_text = json_match.group(1)
+                            print(f"📝 패턴 매칭, JSON 길이: {len(json_text)}자")
+
+                            # JSON 안의 줄바꿈 문제 해결: Python의 literal_eval 시도
+                            # 또는 수동으로 파싱
+                            try:
+                                comparison_result = json.loads(json_text)
+                            except json.JSONDecodeError:
+                                # JSON5 스타일로 재시도 (따옴표 없는 줄바꿈 처리)
+                                # updated_template 필드를 별도로 추출
+                                template_match = re.search(r'"updated_template":\s*"([\s\S]*?)"(?=\s*[,}])', json_text)
+                                if template_match:
+                                    # updated_template 제거하고 나머지만 파싱
+                                    json_without_template = re.sub(
+                                        r'"updated_template":\s*"[\s\S]*?"(?=\s*[,}])',
+                                        '"updated_template": "PLACEHOLDER"',
+                                        json_text
+                                    )
+                                    comparison_result = json.loads(json_without_template)
+                                    # 실제 템플릿 내용을 다시 넣기
+                                    comparison_result["updated_template"] = template_match.group(1)
+                                else:
+                                    raise
+
+                            print("✅ JSON 추출 및 파싱 성공")
+                            break
+                        except json.JSONDecodeError as parse_error:
+                            print(f"⚠️ 패턴 매칭 후 파싱 실패: {str(parse_error)}")
+                            continue
+                else:
+                    # 모든 패턴 실패
+                    print(f"❌ 모든 JSON 추출 패턴 실패")
+                    print(f"🔍 응답 앞 500자: {result_str[:500]}")
+                    comparison_result = {
+                        "error": "JSON 파싱 실패",
+                        "raw_output": result_str[:2000],
+                        "has_changes": False
+                    }
+
+            # 5.5. Change Validator Agent로 검증 (변경사항이 있을 때만)
+            if comparison_result.get("has_changes") and comparison_result.get("changes"):
+                from app.services.agents import create_change_validator_agent
+                from app.services.tasks import create_change_validation_task
+
+                print("🔍 Change Validator Agent로 변경사항 검증 중...")
+
+            validator = create_change_validator_agent()
+            validation_task = create_change_validation_task(
+                validator,
+                comparison_result,
+                our_template_content
+            )
+
+            validation_crew = Crew(
+                agents=[validator],
+                tasks=[validation_task],
+                process=Process.sequential,
+                verbose=True
+            )
+
+            validation_result = validation_crew.kickoff()
+            validation_str = str(validation_result)
+            print(f"🔍 Validator Agent 응답 길이: {len(validation_str)}자")
+
+            # 검증 결과 파싱
+            try:
+                validation_data = json.loads(validation_str)
+                print("✅ Validator 결과 JSON 파싱 성공")
+            except json.JSONDecodeError:
+                # JSON 추출 시도
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', validation_str)
                 if json_match:
                     try:
-                        json_text = json_match.group(1)
-                        print(f"📝 패턴 매칭, JSON 길이: {len(json_text)}자")
+                        validation_data = json.loads(json_match.group(0))
+                        print("✅ Validator 결과 JSON 추출 성공")
+                    except:
+                        print("⚠️ Validator 결과 파싱 실패, 원본 comparison_result 유지")
+                        validation_data = None
+                else:
+                    validation_data = None
 
-                        # JSON 안의 줄바꿈 문제 해결: Python의 literal_eval 시도
-                        # 또는 수동으로 파싱
-                        try:
-                            comparison_result = json.loads(json_text)
-                        except json.JSONDecodeError:
-                            # JSON5 스타일로 재시도 (따옴표 없는 줄바꿈 처리)
-                            # updated_template 필드를 별도로 추출
-                            template_match = re.search(r'"updated_template":\s*"([\s\S]*?)"(?=\s*[,}])', json_text)
-                            if template_match:
-                                # updated_template 제거하고 나머지만 파싱
-                                json_without_template = re.sub(
-                                    r'"updated_template":\s*"[\s\S]*?"(?=\s*[,}])',
-                                    '"updated_template": "PLACEHOLDER"',
-                                    json_text
-                                )
-                                comparison_result = json.loads(json_without_template)
-                                # 실제 템플릿 내용을 다시 넣기
-                                comparison_result["updated_template"] = template_match.group(1)
+            # 검증 결과로 comparison_result 업데이트
+                if validation_data:
+                    # 신규 형식 (decision 기반) 확인
+                    if "decision" in validation_data:
+                        decision = validation_data.get("decision", "REJECT")
+                        requires_recheck = validation_data.get("requires_recheck", False)
+                        approved = validation_data.get("approved_changes", [])
+
+                        print(f"✅ 검증 결과: decision={decision}, recheck={requires_recheck}, approved={len(approved)}개")
+
+                        if decision == "APPROVE" and approved:
+                            # 승인된 변경사항만 유지
+                            comparison_result["changes"] = approved
+                            comparison_result["summary"] = validation_data.get("summary", f"{len(approved)}개 변경사항 승인됨")
+                            print(f"✅ {len(approved)}개 변경사항 승인됨 - 루프 종료")
+                            break  # 승인되면 루프 종료
+                        elif decision == "REJECT" and requires_recheck:
+                            # 재검사 필요
+                            recheck_guideline = validation_data.get("recheck_guideline", {})
+                            print(f"🔄 재검사 필요: {recheck_guideline}")
+                            print(f"   - 현재 반복: {current_iteration}/{max_recheck_iterations}")
+
+                            if current_iteration < max_recheck_iterations:
+                                print("   → 다음 반복에서 재검사 수행")
+                                continue  # 다음 반복으로
                             else:
-                                raise
+                                print("   → 최대 반복 횟수 도달, 변경사항 없음으로 처리")
+                                comparison_result["has_changes"] = False
+                                comparison_result["changes"] = []
+                                comparison_result["summary"] = "최대 재검사 횟수 도달. 변경사항 없음으로 처리."
+                                break
+                        else:
+                            # REJECT이지만 재검사 불필요
+                            print("✅ 변경사항 없음 (재검사 불필요)")
+                            comparison_result["has_changes"] = False
+                            comparison_result["changes"] = []
+                            comparison_result["summary"] = validation_data.get("summary", "변경사항 없음. 템플릿이 이미 최신 상태입니다.")
+                            break
 
-                        print("✅ JSON 추출 및 파싱 성공")
-                        break
-                    except json.JSONDecodeError as parse_error:
-                        print(f"⚠️ 패턴 매칭 후 파싱 실패: {str(parse_error)}")
-                        continue
+                    # 기존 형식 (has_real_changes 기반) 지원
+                    elif "has_real_changes" in validation_data:
+                        has_real = validation_data.get("has_real_changes", False)
+                        approved = validation_data.get("approved_changes", [])
+                        rejected = validation_data.get("rejected_changes", [])
+
+                        print(f"✅ 검증 완료: 승인={len(approved)}개, 거부={len(rejected)}개")
+
+                        if rejected:
+                            print(f"🚫 거부된 변경사항:")
+                            for r in rejected:
+                                print(f"  - {r.get('reason', 'N/A')}")
+
+                        # 실질적 변경이 없으면 has_changes를 false로 변경
+                        if not has_real or not approved:
+                            print("✅ 실질적 변경사항 없음 - has_changes를 false로 설정")
+                            comparison_result["has_changes"] = False
+                            comparison_result["changes"] = []
+                            comparison_result["summary"] = validation_data.get("summary", "변경사항 없음. 템플릿이 이미 최신 상태입니다.")
+                        else:
+                            # 승인된 변경사항만 유지
+                            comparison_result["changes"] = approved
+                            comparison_result["summary"] = validation_data.get("summary", f"{len(approved)}개 변경사항 승인됨")
+                            print(f"✅ {len(approved)}개 변경사항 승인됨")
+                        break  # 기존 형식은 한 번만 실행
+                else:
+                    # validation_data가 없거나 비어있음 - 변경사항 없음으로 처리
+                    print("⚠️ Validator 결과가 비어있음 - 변경사항 없음으로 처리")
+                    comparison_result["has_changes"] = False
+                    comparison_result["changes"] = []
+                    break
             else:
-                # 모든 패턴 실패
-                print(f"❌ 모든 JSON 추출 패턴 실패")
-                print(f"🔍 응답 앞 500자: {result_str[:500]}")
-                comparison_result = {
-                    "error": "JSON 파싱 실패",
-                    "raw_output": result_str[:2000],
-                    "has_changes": False
-                }
+                # Validator 없이 Comparator만 실행된 경우 - 루프 종료
+                print("ℹ️  Comparator만 실행됨 (변경사항 없음) - 루프 종료")
+                break
+
+        # while 루프 종료 후 로그
+        print(f"\n{'='*60}")
+        print(f"🏁 템플릿 검증 오케스트레이션 완료 (총 {current_iteration}회 반복)")
+        print(f"{'='*60}\n")
+
+        # 5.6. 응답 정규화: has_changes와 changes의 일관성 보장 (최종 검증)
+        if not comparison_result.get("has_changes"):
+            # 변경사항 없으면 changes 배열 비우기
+            comparison_result["changes"] = []
+            if comparison_result.get("summary") and ("추가" in comparison_result["summary"] or "변경" in comparison_result["summary"]):
+                # summary도 수정
+                comparison_result["summary"] = "변경사항 없음. 템플릿이 이미 최신 상태입니다."
+            print(f"✅ 응답 정규화: has_changes=false이므로 changes 배열을 비웠습니다")
+        else:
+            # 변경사항 있는데 changes가 비어있으면 경고
+            if not comparison_result.get("changes"):
+                print(f"⚠️ 경고: has_changes=true이지만 changes 배열이 비어있습니다")
+                comparison_result["has_changes"] = False
+                comparison_result["summary"] = "변경사항 없음 (changes 배열이 비어있음)"
 
         # 6. 업데이트된 템플릿을 DB에 저장 (변경사항이 있을 때만)
         new_template_row = None
@@ -830,6 +1092,35 @@ async def validate_template(
                 updated_template = updated_template.replace("\\t", "\t")
                 updated_template = updated_template.replace('\\"', '"')
 
+                # 디버깅: 업데이트된 템플릿에 변경사항이 반영되었는지 확인
+                print(f"🔍 업데이트된 템플릿 검증:")
+                changes_applied = []
+                for change in comparison_result.get("changes", []):
+                    if change.get("type") == "modified":
+                        new_text = change.get("new_text", "")
+                        if new_text and new_text in updated_template:
+                            changes_applied.append(f"✅ '{new_text[:30]}...' 반영됨")
+                        else:
+                            changes_applied.append(f"⚠️ '{new_text[:30]}...' 반영 안됨")
+                    elif change.get("type") == "added":
+                        section = change.get("section", "")
+                        if section and section in updated_template:
+                            changes_applied.append(f"✅ 섹션 '{section}' 추가됨")
+                        else:
+                            changes_applied.append(f"⚠️ 섹션 '{section}' 추가 안됨")
+
+                for status in changes_applied:
+                    print(f"  {status}")
+
+                # 변경사항이 제대로 반영되지 않았으면 저장 안 함
+                not_applied = [s for s in changes_applied if "⚠️" in s]
+                if not_applied:
+                    print(f"❌ {len(not_applied)}개 변경사항이 반영되지 않아 저장하지 않습니다")
+                    comparison_result["has_changes"] = False
+                    updated_template = None
+
+            # updated_template이 None이 아닐 때만 저장
+            if updated_template:
                 # 이전 버전 조회 (있으면 버전 넘버 증가용)
                 latest_existing = (
                     db.query(NoticeTemplate)
@@ -866,39 +1157,6 @@ async def validate_template(
                     f"type={new_template_row.template_type}, version={new_template_row.version}"
                 )
 
-                # 파일로도 저장 (버전 관리용 - 날짜/시간 포함 파일명)
-                saved_filename = None
-                try:
-                    # 프로젝트 루트의 templates 디렉토리
-                    project_root = Path(__file__).parent.parent.parent
-                    templates_dir = project_root / "templates"
-                    templates_dir.mkdir(parents=True, exist_ok=True)
-
-                    # 템플릿 타입에 따른 파일명 매핑
-                    template_file_mapping = {
-                        "소액수의": "lowest_price",
-                        "최저가낙찰": "lowest_price",
-                        "적격심사": "qualification_review",
-                        "협상계약": "negotiation",
-                    }
-
-                    base_filename = template_file_mapping.get(cntrctCnclsMthdNm, cntrctCnclsMthdNm.lower())
-                    
-                    # 날짜/시간 형식: YYYYMMDD_HHMMSS
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"{base_filename}_{timestamp}.md"
-                    saved_filename = filename  # 응답에 포함할 파일명 저장
-                    file_path = templates_dir / filename
-
-                    # 파일 저장
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(updated_template)
-
-                    print(f"✅ 템플릿 파일 저장 완료: {file_path}")
-                except Exception as file_error:
-                    print(f"⚠️ 템플릿 파일 저장 실패: {str(file_error)}")
-                    # 파일 저장 실패해도 DB 저장은 성공했으므로 계속 진행
-
         # 7. 응답 생성 (변경점 및 저장 결과 반환)
         response_data = {
             "status": "unchanged" if not comparison_result.get("has_changes") else "changed",
@@ -910,7 +1168,6 @@ async def validate_template(
                 "id": new_template_row.id,
                 "version": new_template_row.version,
                 "created_at": new_template_row.created_at.isoformat() if new_template_row and new_template_row.created_at else None,
-                "filename": saved_filename,  # 저장된 파일명 추가
             } if new_template_row else None,
         }
 
