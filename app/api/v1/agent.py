@@ -23,7 +23,7 @@ from pathlib import Path
 
 from app.infra.db.database import get_db, engine, Base
 from app.models.agent_state import AgentState
-from app.models.schemas import UserFeedback, SaveTemplateRequest
+from app.models.schemas import UserFeedback, SaveTemplateRequest, ExtractedData, ClassificationResult, UploadDocumentRequest
 from app.services.crew_service import BiddingDocumentCrew
 from app.services.nara_bid_service import get_latest_bid_notice
 from app.utils.document_parser import parse_document
@@ -83,62 +83,68 @@ def detect_file_type(content: bytes) -> str:
 
 @router.post("/upload")
 async def upload_document(
-    file: UploadFile = File(...),
-    format: Optional[str] = Query("markdown", description="출력 형식: markdown, pdf, docx"),
-    template_id: Optional[int] = Query(None, description="템플릿 ID (DB에서 조회, validate-template에서 생성된 템플릿)")
+    request: UploadDocumentRequest = Body(..., description="추출된 데이터와 분류 결과"),
+    template_id: int = Query(..., description="템플릿 ID (필수, validate-template에서 생성된 템플릿)"),
+    format: Optional[str] = Query("markdown", description="출력 형식: markdown, pdf, docx")
 ):
     """
-    문서 업로드 + 즉시 Agent 실행 (통합)
+    추출된 데이터와 분류 결과로 문서 생성
 
-    - 발주계획서 업로드 (PDF, DOCX, HWP)만 받음
-    - 텍스트 추출
-    - AgentState 생성
-    - 즉시 Agent Loop 실행
-    - 템플릿과 법령은 시스템이 자동으로 처리
+    - classify에서 받은 extracted_data와 classification을 사용
+    - 지정된 템플릿 ID로 문서 생성
     - 최종 결과 반환 (마크다운, PDF, DOCX)
 
     Args:
-        file: 구매계획서 파일
+        request: UploadDocumentRequest (extracted_data + classification 포함)
+        template_id: 템플릿 ID (필수, validate-template에서 생성된 템플릿)
         format: 출력 형식 (markdown, pdf, docx)
-        template_id: 템플릿 ID (DB에서 조회, validate-template에서 생성된 템플릿 사용 시)
     """
-    # 세션 ID 생성
-    session_id = str(uuid.uuid4())
+    # classify에서 받은 session_id 사용 (또는 새로 생성)
+    session_id = request.session_id if request.session_id else str(uuid.uuid4())
     try:
-        # 파일 읽기
-        content = await file.read()
-
-        # 문서 파싱 (텍스트 추출)
-        raw_text = parse_document(content, file.filename)
-
-        # AgentState 생성
+        # 요청에서 데이터 추출
+        extracted_data = request.extracted_data
+        classification = request.classification
+        
+        # AgentState 생성 (추출/분류는 이미 완료된 것으로 간주)
         state = AgentState(
             session_id=session_id,
-            step="extract",
-            raw_text=raw_text
+            step="generate",
+            raw_text=""  # 파일이 없으므로 빈 텍스트
         )
-
-        # 저장
+        
+        # 분류 결과를 state에 저장
+        state.classification = classification
+        state.extracted_data = extracted_data.model_dump() if hasattr(extracted_data, 'model_dump') else extracted_data.dict()
+        
+        # 세션 저장
         agent_sessions[session_id] = state
-
-        # 즉시 Agent 실행
+        
+        # 추출된 데이터를 딕셔너리로 변환
+        extracted_dict = extracted_data.model_dump() if hasattr(extracted_data, 'model_dump') else extracted_data.dict()
+        
+        # Agent 실행
         crew_service = BiddingDocumentCrew(state)
-
+        
         # 법령 참조는 시스템이 자동으로 선택
         law_references = get_default_law_references()
-
-        # 템플릿 정보 전달 (template_id만 사용)
-        template_info = {}
-        if template_id:
-            template_info["template_id"] = template_id
-            print(f"📋 템플릿 ID 지정: {template_id}")
-
-        # 전체 파이프라인 실행 - 완성된 문서 String 반환
-        final_document = crew_service.run_full_pipeline(
-            document_text=raw_text,
+        
+        # 템플릿 정보 전달
+        template_info = {"template_id": template_id}
+        print(f"📋 템플릿 ID 지정: {template_id}")
+        
+        # 문서 생성만 실행 (추출/분류는 이미 완료)
+        announcement_type = classification.get("recommended_type", "적격심사")
+        
+        # 소액수의는 "최저가낙찰" 템플릿 사용
+        if announcement_type == "소액수의":
+            announcement_type = "최저가낙찰"
+        
+        final_document = crew_service.run_generation(
+            extracted_dict,
+            announcement_type=announcement_type,
             law_references=law_references,
-            max_iterations=10,  # 최대 10회 반복
-            template_info=template_info  # 템플릿 정보 전달
+            template_info=template_info
         )
 
         # 문서 길이 확인 (JSON 직렬화 문제 진단용)
@@ -160,15 +166,18 @@ async def upload_document(
         if missing_sections:
             print(f"⚠️ 경고: 생성된 문서에서 다음 섹션이 누락되었습니다: {missing_sections}")
 
+        # 문서 길이 확인
+        document_length = len(final_document) if final_document else 0
+        print(f"📄 생성된 문서 길이: {document_length}자")
+        
         # 형식에 따라 반환
         if format.lower() == "markdown":
-            # JSON 직렬화 문제 방지: JSONResponse를 명시적으로 사용
             response_data = {
                 "session_id": session_id,
-                "file_name": file.filename,
+                "file_name": request.file_name,
                 "status": "completed",
                 "format": "markdown",
-                "document": final_document,  # 마크다운 텍스트
+                "document": final_document,
                 "state": {
                     "step": state.step,
                     "retry_count": state.retry_count,
@@ -177,21 +186,13 @@ async def upload_document(
                 }
             }
             
-            # JSON 직렬화 전 문서 길이 확인
             try:
-                # JSON 직렬화 테스트 (실제 직렬화 전에 문제 확인)
-                json_str = json.dumps(response_data, ensure_ascii=False, indent=None)
-                json_length = len(json_str)
-                print(f"📦 JSON 직렬화 후 길이: {json_length}자 (원본 문서: {document_length}자)")
-                
-                # JSONResponse를 명시적으로 사용하여 직렬화 제어
                 return JSONResponse(
                     content=response_data,
                     media_type="application/json"
                 )
             except Exception as json_error:
                 print(f"❌ JSON 직렬화 오류: {json_error}")
-                # JSON 직렬화 실패 시 에러 반환
                 raise HTTPException(
                     status_code=500,
                     detail=f"JSON 직렬화 실패: {str(json_error)}. 문서 길이: {document_length}자"
@@ -200,17 +201,13 @@ async def upload_document(
             # PDF 또는 DOCX로 변환
             try:
                 file_bytes = convert_document(final_document, format.lower())
-                
-                # 파일 확장자 결정
                 extension = "pdf" if format.lower() == "pdf" else "docx"
                 filename = f"공고문_{session_id[:8]}.{extension}"
                 
-                # 임시 파일 생성
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{extension}") as tmp_file:
                     tmp_file.write(file_bytes)
                     tmp_path = tmp_file.name
                 
-                # 파일 응답 반환
                 return FileResponse(
                     tmp_path,
                     media_type=f"application/{extension}",
@@ -220,20 +217,13 @@ async def upload_document(
                     }
                 )
             except Exception as e:
-                # 변환 실패 시 마크다운 반환
                 return {
                     "session_id": session_id,
-                    "file_name": file.filename,
                     "status": "completed",
                     "format": "markdown",
                     "document": final_document,
                     "error": f"파일 변환 실패: {str(e)}. 마크다운 형식으로 반환합니다.",
-                    "state": {
-                        "step": state.step,
-                        "retry_count": state.retry_count,
-                        "created_at": state.created_at.isoformat(),
-                        "updated_at": state.updated_at.isoformat()
-                    }
+                    "classification": classification
                 }
 
     except Exception as e:
@@ -241,6 +231,103 @@ async def upload_document(
         if session_id in agent_sessions:
             agent_sessions[session_id].add_error(str(e))
         raise HTTPException(status_code=400, detail=f"처리 실패: {str(e)}")
+
+
+@router.post("/generate")
+async def generate_from_extracted(
+    extracted_data: ExtractedData = Body(..., description="추출된 데이터 (classify에서 받은 데이터)"),
+    template_id: int = Query(..., description="템플릿 ID (validate-template에서 생성된 템플릿)"),
+    format: Optional[str] = Query("markdown", description="출력 형식: markdown, pdf, docx")
+):
+    """
+    추출된 데이터로 문서 생성 (파일 업로드 없이)
+    
+    - classify에서 추출된 데이터를 재사용
+    - 지정된 템플릿 ID로 문서 생성
+    - 최종 결과 반환 (마크다운, PDF, DOCX)
+    
+    Args:
+        extracted_data: 추출된 데이터 (ExtractedData 형식)
+        template_id: 템플릿 ID (필수, validate-template에서 생성된 템플릿)
+        format: 출력 형식 (markdown, pdf, docx)
+    """
+    session_id = str(uuid.uuid4())
+    try:
+        # AgentState 생성 (추출 단계는 이미 완료된 것으로 간주)
+        state = AgentState(
+            session_id=session_id,
+            step="generate",
+            raw_text=""  # 파일이 없으므로 빈 텍스트
+        )
+        
+        # 추출된 데이터를 딕셔너리로 변환
+        extracted_dict = extracted_data.model_dump() if hasattr(extracted_data, 'model_dump') else extracted_data.dict()
+        
+        # 분류 실행 (추출된 데이터 기반)
+        crew_service = BiddingDocumentCrew(state)
+        classification = crew_service.run_classification(extracted_dict)
+        
+        # 법령 참조는 시스템이 자동으로 선택
+        law_references = get_default_law_references()
+        
+        # 템플릿 정보 전달
+        template_info = {"template_id": template_id}
+        print(f"📋 템플릿 ID 지정: {template_id}")
+        
+        # 문서 생성만 실행 (추출/분류는 이미 완료)
+        announcement_type = classification.get("recommended_type", "적격심사")
+        
+        # 소액수의는 "최저가낙찰" 템플릿 사용
+        if announcement_type == "소액수의":
+            announcement_type = "최저가낙찰"
+        
+        final_document = crew_service.run_generation(
+            extracted_dict,
+            announcement_type=announcement_type,
+            law_references=law_references,
+            template_info=template_info
+        )
+        
+        # 형식에 따라 반환
+        if format.lower() == "markdown":
+            return {
+                "session_id": session_id,
+                "status": "completed",
+                "format": "markdown",
+                "document": final_document,
+                "classification": classification
+            }
+        else:
+            # PDF 또는 DOCX로 변환
+            try:
+                file_bytes = convert_document(final_document, format.lower())
+                extension = "pdf" if format.lower() == "pdf" else "docx"
+                filename = f"공고문_{session_id[:8]}.{extension}"
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{extension}") as tmp_file:
+                    tmp_file.write(file_bytes)
+                    tmp_path = tmp_file.name
+                
+                return FileResponse(
+                    tmp_path,
+                    media_type=f"application/{extension}",
+                    filename=filename,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={filename}"
+                    }
+                )
+            except Exception as e:
+                return {
+                    "session_id": session_id,
+                    "status": "completed",
+                    "format": "markdown",
+                    "document": final_document,
+                    "error": f"파일 변환 실패: {str(e)}. 마크다운 형식으로 반환합니다.",
+                    "classification": classification
+                }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"문서 생성 실패: {str(e)}")
 
 
 @router.post("/run")

@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 
@@ -34,12 +34,12 @@ class ExtractedData(BaseModel):
     determination_method: Optional[str] = Field(None, description="낙찰 방식 추천 (예: 적격심사)")
 
     # 자격 요건
-    qualification_notes: str = Field("", description="자격 요건 및 특이사항")
+    qualification_notes: Optional[Union[str, Dict[str, Any]]] = Field(None, description="자격 요건 및 특이사항 (문자열 또는 객체)")
     qualification: Optional[QualificationDetail] = Field(None, description="자격 요건 세부 정보")
     
     # 구매계획서 추가 정보 (사용자 요구사항 반영)
     detail_item_codes: List[str] = Field(default_factory=list, description="세부 품목 번호 목록")
-    industry_codes: List[str] = Field(default_factory=list, description="업종코드 목록")
+    industry_codes: Optional[List[str]] = Field(default=None, description="업종코드 목록")
     is_joint_contract: bool = Field(default=False, description="공동계약 여부")
     has_region_restriction: bool = Field(default=False, description="지역제한 여부")
     restricted_region: Optional[str] = Field(None, description="제한 지역")
@@ -217,6 +217,51 @@ class UserFeedback(BaseModel):
                 "feedback_type": "modify",
                 "comments": "계약 기간을 3개월 연장해주세요",
                 "modified_content": None
+            }
+        }
+
+
+class ClassifyStateInfo(BaseModel):
+    """classify 응답의 state 정보"""
+    step: str = Field(..., description="현재 단계")
+    created_at: str = Field(..., description="생성 시각")
+    updated_at: str = Field(..., description="업데이트 시각")
+
+
+class UploadDocumentRequest(BaseModel):
+    """
+    /upload 엔드포인트 요청 모델
+    classify 엔드포인트의 전체 응답 구조를 그대로 받음
+    """
+    session_id: str = Field(..., description="세션 ID (classify 응답의 session_id)")
+    file_name: str = Field(..., description="파일명 (classify 응답의 file_name)")
+    status: str = Field(..., description="상태 (classify 응답의 status, 예: 'classified')")
+    extracted_data: ExtractedData = Field(..., description="추출된 데이터 (classify 응답의 extracted_data)")
+    classification: Dict[str, Any] = Field(..., description="분류 결과 (classify 응답의 classification)")
+    state: ClassifyStateInfo = Field(..., description="상태 정보 (classify 응답의 state)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "89e5ae37-e343-4569-ab6a-31eb501dabfc",
+                "file_name": "10,11.pdf",
+                "status": "classified",
+                "extracted_data": {
+                    "project_name": "실내공기질 자동측정망 가스상 측정장비 구매 계획(안)",
+                    "item_name": "이산화탄소(CO₂) 측정장비",
+                    "estimated_amount": 61104000,
+                    "total_budget_vat": 67214400
+                },
+                "classification": {
+                    "recommended_type": "적격심사",
+                    "confidence": 0.95,
+                    "reason": "추정가격 61,104,000원 기준 적격심사 선택"
+                },
+                "state": {
+                    "step": "generate",
+                    "created_at": "2025-12-18T15:04:53.713069",
+                    "updated_at": "2025-12-18T15:05:29.399820"
+                }
             }
         }
 
