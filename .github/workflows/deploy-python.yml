@@ -8,6 +8,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Coolify deploy webhook
+      - name: Trigger Coolify deploy webhook (debug)
         run: |
-          curl -sSL "${{ secrets.COOLIFY_PY_WEBHOOK }}"
+          set -e
+          echo "Calling webhook..."
+          code=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" -L "${{ secrets.COOLIFY_PY_WEBHOOK }}")
+          echo "HTTP $code"
+          echo "--- response ---"
+          cat /tmp/resp.txt || true
+          echo "---------------"
