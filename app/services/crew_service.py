@@ -120,6 +120,178 @@ class BiddingDocumentCrew:
         
         return extracted_data
 
+    def run_extraction_with_file(self, file_content_base64: str, filename: str, use_reflection: bool = True) -> Dict[str, Any]:
+        """
+        HWP 등 특수 파일을 CrewAI 도구로 파싱하여 정보 추출
+        
+        Args:
+            file_content_base64: Base64 인코딩된 파일 내용
+            filename: 파일명
+            use_reflection: 상호 리플렉션 사용 여부
+            
+        Returns:
+            ExtractedData 형식의 딕셔너리
+        """
+        print("\n" + "="*60)
+        print("📄 STEP 2: 문서 정보 추출 시작 (CrewAI 도구 사용)")
+        print("="*60)
+        print(f"   파일: {filename}")
+        print(f"   CrewAI 도구를 사용하여 파일 파싱 중...")
+        
+        # 1. Claude로 먼저 추출 (도구 사용)
+        print("\n🔵 [1단계] Claude Extractor 실행 (도구 사용)...")
+        task_claude = create_extraction_task(
+            self.extractor,
+            file_content_base64=file_content_base64,
+            filename=filename
+        )
+        
+        crew_claude = Crew(
+            agents=[self.extractor],
+            tasks=[task_claude],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        result_claude = crew_claude.kickoff()
+        claude_data = self._parse_extraction_result(result_claude)
+        
+        print(f"✅ Claude 추출 완료")
+        print(f"   - 추출된 필드 수: {len([k for k, v in claude_data.items() if v and k != 'raw_output'])}")
+        
+        # 2. 미싱 정보 체크 및 리플렉션
+        if not use_reflection:
+            print(f"\n⏭️ 리플렉션 비활성화: Claude 추출 결과만 사용")
+            final_data = claude_data
+        else:
+            missing_fields = self._check_missing_fields(claude_data)
+            
+            if not missing_fields:
+                print(f"\n✅ 모든 필수 필드가 추출되었습니다. 상호 리플렉션 생략.")
+                final_data = claude_data
+            else:
+                print(f"\n⚠️ 미싱 필드 발견: {', '.join(missing_fields)}")
+                print(f"🔄 OpenAI Extractor로 보완 추출 시작...")
+                
+                # 3. OpenAI로도 추출 (도구 사용)
+                openai_extractor = create_extractor_agent_openai()
+                task_openai = create_extraction_task(
+                    openai_extractor,
+                    file_content_base64=file_content_base64,
+                    filename=filename
+                )
+                
+                crew_openai = Crew(
+                    agents=[openai_extractor],
+                    tasks=[task_openai],
+                    process=Process.sequential,
+                    verbose=True
+                )
+                
+                result_openai = crew_openai.kickoff()
+                openai_data = self._parse_extraction_result(result_openai)
+                
+                print(f"✅ OpenAI 추출 완료")
+                print(f"   - 추출된 필드 수: {len([k for k, v in openai_data.items() if v and k != 'raw_output'])}")
+                
+                # 4. 상호 리플렉션 (원본 파일 정보도 전달)
+                print(f"\n🔄 [2단계] 상호 리플렉션 시작 (Claude + OpenAI 결과 통합)...")
+                reflection_agent = create_validator_agent()  # Validator Agent를 리플렉션용으로 사용
+                reflection_task = create_cross_reflection_task(
+                    reflection_agent,
+                    claude_data,
+                    openai_data,
+                    document_text=f"[HWP 파일: {filename}]"  # 파일 정보만 전달
+                )
+                
+                crew_reflection = Crew(
+                    agents=[reflection_agent],
+                    tasks=[reflection_task],
+                    process=Process.sequential,
+                    verbose=True
+                )
+                
+                result_reflection = crew_reflection.kickoff()
+                final_data = self._parse_extraction_result(result_reflection)
+                
+                print(f"✅ 상호 리플렉션 완료")
+                print(f"   - 최종 필드 수: {len([k for k, v in final_data.items() if v and k != 'raw_output'])}")
+                
+                # 미싱 필드가 보완되었는지 확인
+                remaining_missing = self._check_missing_fields(final_data)
+                if remaining_missing:
+                    print(f"⚠️ 여전히 미싱 필드: {', '.join(remaining_missing)}")
+                else:
+                    print(f"✅ 모든 필수 필드가 보완되었습니다!")
+        
+        # ExtractedData 모델에 정의된 필드만 필터링
+        from app.models.schemas import ExtractedData
+        valid_fields = set(ExtractedData.model_fields.keys())
+        filtered_data = {k: v for k, v in final_data.items() if k in valid_fields}
+        
+        # 데이터 타입 정규화 (run_extraction과 동일한 로직)
+        if "qualification_notes" in filtered_data:
+            if isinstance(filtered_data["qualification_notes"], dict):
+                try:
+                    filtered_data["qualification_notes"] = json.dumps(filtered_data["qualification_notes"], ensure_ascii=False)
+                except:
+                    filtered_data["qualification_notes"] = "\n".join(f"{k}: {v}" for k, v in filtered_data["qualification_notes"].items())
+            elif isinstance(filtered_data["qualification_notes"], list):
+                filtered_data["qualification_notes"] = "\n".join(str(item) for item in filtered_data["qualification_notes"])
+            elif not isinstance(filtered_data["qualification_notes"], str) and filtered_data["qualification_notes"] is not None:
+                filtered_data["qualification_notes"] = str(filtered_data["qualification_notes"])
+        
+        if "restricted_region" in filtered_data:
+            if isinstance(filtered_data["restricted_region"], list):
+                filtered_data["restricted_region"] = ", ".join(str(item) for item in filtered_data["restricted_region"])
+        
+        if "detail_item_codes" in filtered_data:
+            if isinstance(filtered_data["detail_item_codes"], str):
+                filtered_data["detail_item_codes"] = [filtered_data["detail_item_codes"]] if filtered_data["detail_item_codes"] else []
+            elif filtered_data["detail_item_codes"] is None:
+                filtered_data["detail_item_codes"] = []
+                
+        if "industry_codes" in filtered_data:
+            if isinstance(filtered_data["industry_codes"], str):
+                filtered_data["industry_codes"] = [filtered_data["industry_codes"]] if filtered_data["industry_codes"] else []
+            elif filtered_data["industry_codes"] is None:
+                filtered_data["industry_codes"] = []
+            
+            # 업종코드 검증 및 변환
+            if isinstance(filtered_data["industry_codes"], list):
+                validated_codes = []
+                industry_names_to_lookup = []
+                
+                for code in filtered_data["industry_codes"]:
+                    code_str = str(code).strip()
+                    if code_str and code_str.isdigit():
+                        validated_codes.append(code_str)
+                    elif code_str and any(char.isdigit() for char in code_str):
+                        import re
+                        numbers = re.findall(r'\d+', code_str)
+                        if numbers:
+                            validated_codes.extend(numbers)
+                        else:
+                            industry_names_to_lookup.append(code_str)
+                    else:
+                        industry_names_to_lookup.append(code_str)
+                
+                # 업종명으로 업종코드 조회
+                if industry_names_to_lookup:
+                    from app.utils.industry_api_client import get_industry_api_client
+                    api_client = get_industry_api_client()
+                    
+                    for industry_name in industry_names_to_lookup:
+                        cleaned_name = industry_name.replace("업종코드", "").replace("업종", "").strip()
+                        if cleaned_name:
+                            industry_code = api_client.get_industry_code_by_name(cleaned_name)
+                            if industry_code:
+                                validated_codes.append(industry_code)
+                
+                filtered_data["industry_codes"] = list(set(validated_codes))  # 중복 제거
+        
+        return filtered_data
+
     def run_extraction(self, document_text: str, use_reflection: bool = True) -> Dict[str, Any]:
         """
         STEP 2: 문서에서 정보 추출 (Claude + OpenAI 이중 추출 + 상호 리플렉션)

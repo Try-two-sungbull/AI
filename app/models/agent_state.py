@@ -38,6 +38,8 @@ class AgentState(BaseModel):
 
     # 데이터 저장
     raw_text: Optional[str] = Field(default=None, description="원본 문서 텍스트")
+    file_content_base64: Optional[str] = Field(default=None, description="Base64 인코딩된 파일 내용 (HWP 등 특수 파일용)")
+    file_name: Optional[str] = Field(default=None, description="파일명")
     extracted_data: Optional[dict] = Field(default=None, description="추출된 데이터")
     classification: Optional[dict] = Field(default=None, description="분류 결과")
     generated_document: Optional[str] = Field(default=None, description="생성된 공고문")

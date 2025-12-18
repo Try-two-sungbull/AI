@@ -549,16 +549,12 @@ def html_to_pdf(html_content: str, output_path: Optional[str] = None) -> bytes:
         <head>
             <meta charset="UTF-8">
             <style>
-                @font-face {{
-                    font-family: 'NotoSansKR';
-                    src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
-                }}
                 @page {{
                     size: A4;
                     margin: 2cm;
                 }}
                 body {{
-                    font-family: 'NotoSansKR', "맑은 고딕", "Malgun Gothic", sans-serif;
+                    font-family: "맑은 고딕", "Malgun Gothic", "Nanum Gothic", sans-serif;
                     font-size: 11pt;
                     line-height: 1.6;
                     color: #000;
@@ -582,68 +578,6 @@ def html_to_pdf(html_content: str, output_path: Optional[str] = None) -> bytes:
             html_content = html_content.replace('<head>', '<head>\n    <meta charset="UTF-8">', 1)
         elif '<HEAD>' in html_content:
             html_content = html_content.replace('<HEAD>', '<HEAD>\n    <meta charset="UTF-8">', 1)
-    
-    # HTML에 NotoSansKR 폰트가 없으면 추가 (한글 폰트 문제 해결)
-    html_lower_check = html_content.lower()
-    if 'notosanskr' not in html_lower_check:
-        # <style> 태그 찾기
-        style_pattern = r'<style[^>]*>'
-        style_match = re.search(style_pattern, html_content, re.IGNORECASE)
-        
-        if style_match:
-            # <style> 태그 바로 다음에 @font-face 추가
-            style_end = style_match.end()
-            font_face_css = """    @font-face {
-        font-family: 'NotoSansKR';
-        src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
-    }
-"""
-            html_content = html_content[:style_end] + '\n' + font_face_css + html_content[style_end:]
-            
-            # body 스타일에 NotoSansKR 폰트 추가 (더 정확한 패턴 사용)
-            # body { ... } 패턴 찾기 (여러 줄 지원)
-            body_pattern = r'body\s*\{[^}]*\}'
-            body_match = re.search(body_pattern, html_content, re.IGNORECASE | re.DOTALL)
-            if body_match:
-                body_style = body_match.group(0)
-                if 'NotoSansKR' not in body_style and 'notosanskr' not in body_style.lower():
-                    # font-family가 있으면 앞에 추가
-                    if 'font-family' in body_style:
-                        # font-family: ... ; 패턴 찾아서 앞에 NotoSansKR 추가
-                        body_style = re.sub(
-                            r'(font-family\s*:\s*)([^;]+)',
-                            r"\1'NotoSansKR', \2",
-                            body_style,
-                            flags=re.IGNORECASE
-                        )
-                    else:
-                        # font-family가 없으면 추가 (body { 다음에)
-                        body_style = re.sub(
-                            r'(body\s*\{)',
-                            r"\1\n        font-family: 'NotoSansKR', sans-serif;",
-                            body_style,
-                            flags=re.IGNORECASE
-                        )
-                    html_content = html_content[:body_match.start()] + body_style + html_content[body_match.end():]
-        else:
-            # <style> 태그가 없으면 <head> 안에 추가
-            if '<head>' in html_content or '<HEAD>' in html_content:
-                head_end = html_content.find('</head>')
-                if head_end == -1:
-                    head_end = html_content.find('</HEAD>')
-                if head_end > 0:
-                    style_block = """
-    <style>
-        @font-face {
-            font-family: 'NotoSansKR';
-            src: url('/fonts/NotoSansKR-Regular.ttf') format('truetype');
-        }
-        body {
-            font-family: 'NotoSansKR', sans-serif;
-        }
-    </style>
-"""
-                    html_content = html_content[:head_end] + style_block + html_content[head_end:]
     
     # WeasyPrint에 UTF-8로 전달하여 인코딩 문제 방지
     font_config = FontConfiguration()

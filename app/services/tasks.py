@@ -9,13 +9,70 @@ from crewai import Task
 from typing import Dict, Any, List
 
 
-def create_extraction_task(agent, document_text: str) -> Task:
+def create_extraction_task(agent, document_text: str = None, file_content_base64: str = None, filename: str = None) -> Task:
     """
     STEP 2: 핵심 정보 추출 Task
 
-    Input: 발주계획서 원본 텍스트
+    Input: 발주계획서 원본 텍스트 또는 파일 (Base64)
     Output: ExtractedData JSON
+    
+    Args:
+        document_text: 파싱된 텍스트 (일반 파일용)
+        file_content_base64: Base64 인코딩된 파일 내용 (HWP 등 특수 파일용)
+        filename: 파일명
     """
+    # HWP 파일인 경우 도구 사용 안내
+    if file_content_base64 and filename and filename.lower().endswith('.hwp'):
+        return Task(
+            description=f"""
+            다음 HWP 파일에서 핵심 정보를 추출하세요.
+
+            **중요**: 먼저 **문서 파싱 도구(document_parser_tool)** 또는 **HWP 파싱 도구(hwp_parser_tool)**를 사용하여 
+            파일에서 텍스트를 추출한 후, 추출된 텍스트를 분석하세요.
+
+            파일 정보:
+            - 파일명: {filename}
+            - 파일 내용 (Base64): {file_content_base64[:100]}... (전체 내용은 도구에 전달)
+
+            **도구 사용 방법**:
+            1. `document_parser_tool` 또는 `hwp_parser_tool`을 호출하세요
+            2. file_content_base64 파라미터에 위의 Base64 문자열을 전달하세요
+            3. filename 파라미터에 "{filename}"을 전달하세요
+            4. 도구가 반환한 텍스트를 분석하여 정보를 추출하세요
+
+            추출해야 할 정보:
+        1. project_name: 문서의 제목 (구매계획서의 제목이 공고명이 됨. 예: "실내공기질 자동측정망 가스상 측정장비 구매 계획(안)")
+        2. item_name: 품목명
+        3. estimated_amount: 추정 금액 (숫자로, 원 단위, VAT 제외)
+        4. total_budget_vat: 총 예산 (VAT 포함)
+        5. contract_period: 계약 기간
+        6. delivery_deadline_days: 납품 기한 (일)
+        7. procurement_type: 조달 유형 (용역/공사/물품 중 선택)
+        8. procurement_method_raw: 조달 방법 원문 (예: 일반경쟁입찰)
+        9. determination_method: 낙찰 방식 추천 (추천만, 확정 아님)
+        10. detail_item_codes: 세부 품목 번호 목록 (있을 경우)
+        11. industry_codes: 업종코드 목록 (있을 경우)
+            ⚠️ 중요: 업종코드는 숫자로 된 코드 번호입니다 (예: "1235", "6780").
+            - "업종코드"라는 단어 뒤에 오는 숫자를 찾으세요
+            - 업종명(예: "고압가스판매업")이 아닌 실제 코드 번호를 추출하세요
+            - 문서에서 "업종코드: 1245" 또는 "업종코드 1345" 형태로 표기된 숫자를 찾으세요
+            - 여러 업종코드가 있으면 모두 배열로 추출하세요
+            - 업종코드 번호를 찾을 수 없으면 null로 설정하세요 (업종명을 넣지 마세요)
+        12. is_joint_contract: 공동계약 여부 (true/false)
+        13. has_region_restriction: 지역제한 여부 (true/false)
+        14. restricted_region: 제한 지역 (지역제한이 있는 경우)
+        15. qualification_notes: 자격 요건 및 특이사항
+
+        JSON 형식으로 출력하세요.
+        """,
+            agent=agent,
+            expected_output="JSON 형식의 추출된 데이터 (ExtractedData 스키마 준수)"
+        )
+    
+    # 일반 텍스트인 경우 기존 방식
+    if not document_text:
+        raise ValueError("document_text 또는 file_content_base64 중 하나는 필수입니다.")
+    
     return Task(
         description=f"""
         다음 발주계획서에서 핵심 정보를 추출하세요.
