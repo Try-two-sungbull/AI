@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -36,6 +36,13 @@ class ExtractedData(BaseModel):
     # 자격 요건
     qualification_notes: str = Field("", description="자격 요건 및 특이사항")
     qualification: Optional[QualificationDetail] = Field(None, description="자격 요건 세부 정보")
+    
+    # 구매계획서 추가 정보 (사용자 요구사항 반영)
+    detail_item_codes: List[str] = Field(default_factory=list, description="세부 품목 번호 목록")
+    industry_codes: List[str] = Field(default_factory=list, description="업종코드 목록")
+    is_joint_contract: bool = Field(default=False, description="공동계약 여부")
+    has_region_restriction: bool = Field(default=False, description="지역제한 여부")
+    restricted_region: Optional[str] = Field(None, description="제한 지역")
 
     class Config:
         json_schema_extra = {
@@ -57,12 +64,40 @@ class ClassificationResult(BaseModel):
     """
     공고 유형 분류 결과
 
-    STEP 3에서 Claude가 국가계약법 기준으로 분류
+    STEP 3에서 Rule Engine이 국가계약법 기준으로 분류
     """
     recommended_type: str = Field(..., description="추천 공고 유형 (예: 적격심사, 최저가)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="신뢰도 (0.0 ~ 1.0)")
-    reason: str = Field(..., description="추천 이유")
+    reason: str = Field(..., description="추천 이유 (간단 설명)")
     alternative_types: List[str] = Field(default_factory=list, description="대안 유형들")
+    
+    # 실 프로젝트 필수: 판단 근거 구조화 (Reason Trace)
+    reason_trace: Optional[Dict[str, Any]] = Field(
+        None,
+        description="판단 근거 상세 정보 (감사, 로그, UI 표시용)"
+    )
+    """
+    reason_trace 구조 예시:
+    {
+        "estimated_price_exc_vat": 300000000,
+        "total_budget_vat": 330000000,
+        "threshold_used": {
+            "소액수의_최대": 100000000,
+            "별표2_최소": 230000000,
+            "별표1_최소": 1000000000
+        },
+        "rule_source": "국가계약법 시행규칙 별표 2",
+        "calculation_steps": [
+            "VAT 제외 추정가격: 330,000,000 / 1.1 = 300,000,000원",
+            "300,000,000 >= 230,000,000 → 별표2 적용",
+            "300,000,000 >= 100,000,000 → 적격심사"
+        ],
+        "contract_nature": {
+            "contract_type": "국가계약",
+            "execution_type": "단독"
+        }
+    }
+    """
 
     class Config:
         json_schema_extra = {
@@ -148,8 +183,10 @@ class DocumentTemplate(BaseModel):
     """
     template_id: str = Field(..., description="템플릿 ID")
     template_type: str = Field(..., description="템플릿 유형 (예: 적격심사)")
-    content: str = Field(..., description="템플릿 내용 (마크다운/HTML)")
+    content: str = Field(..., description="템플릿 내용 (마크다운/HTML 또는 파일 경로)")
     placeholders: List[str] = Field(default_factory=list, description="치환 필드 목록")
+    template_format: Optional[str] = Field(None, description="템플릿 형식 (hwpx, pdf, md)")
+    template_path: Optional[str] = Field(None, description="템플릿 파일 경로 (HWPX/PDF용)")
 
     class Config:
         json_schema_extra = {

@@ -5,11 +5,45 @@ from dotenv import load_dotenv
 from app.config import get_settings
 from app.api.v1 import api_router
 
-# 환경 변수 로드
-load_dotenv()
+# 환경 변수 로드 (.env 파일 명시적 로드)
+load_dotenv(override=True)  # override=True로 기존 환경 변수 덮어쓰기
 
 # 설정 로드
 settings = get_settings()
+
+# API 키 검증 (시작 시점)
+def validate_api_keys():
+    """시작 시점에 API 키 검증"""
+    errors = []
+    
+    # OpenAI API 키 필수 (Classifier, Validator 사용)
+    if not settings.openai_api_key or settings.openai_api_key.strip() == "":
+        errors.append("❌ OPENAI_API_KEY가 설정되지 않았습니다. (필수)")
+    elif not settings.openai_api_key.startswith("sk-"):
+        errors.append("⚠️ OPENAI_API_KEY 형식이 올바르지 않을 수 있습니다.")
+    
+    # Anthropic API 키 선택사항 (없으면 Extractor/Generator도 OpenAI 사용)
+    if not settings.anthropic_api_key or settings.anthropic_api_key.strip() == "":
+        print("⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. Extractor/Generator는 OpenAI를 사용합니다.")
+    elif not settings.anthropic_api_key.startswith("sk-ant-"):
+        print("⚠️ ANTHROPIC_API_KEY 형식이 올바르지 않을 수 있습니다.")
+    else:
+        print("✅ ANTHROPIC_API_KEY 설정됨 (Extractor/Generator는 Claude 사용)")
+    
+    if errors:
+        raise ValueError("\n".join(errors))
+    
+    print("✅ API 키 검증 완료")
+
+# 시작 시점 API 키 검증
+try:
+    validate_api_keys()
+except ValueError as e:
+    print(f"\n🚨 시작 실패: {e}")
+    print("\n필요한 환경 변수:")
+    print("  - OPENAI_API_KEY (필수)")
+    print("  - ANTHROPIC_API_KEY (선택, 없으면 OpenAI 사용)")
+    raise
 
 # FastAPI 앱 생성
 app = FastAPI(

@@ -119,6 +119,25 @@ python -m app.main
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+## 빠른 사용법
+
+### 파일 업로드 및 공고문 생성
+
+```python
+import requests
+
+# PDF 또는 HWP 파일 업로드
+url = "http://localhost:8000/api/v1/agent/upload"
+with open("구매계획서.pdf", "rb") as f:
+    files = {"file": f}
+    response = requests.post(url, files=files)
+
+result = response.json()
+print(result["document"])  # 생성된 공고문
+```
+
+**자세한 사용법**: `USAGE_GUIDE.md` 참고
+
 ## 주요 엔드포인트
 
 ### 1. POST /api/v1/agent/upload

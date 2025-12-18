@@ -1,40 +1,89 @@
+############################################
+# Python: 3.10+ (Docker 환경)
+# CrewAI 기반 입찰 공고문 자동 작성 시스템
+############################################
+
+# -------------------------
 # FastAPI Core
+# -------------------------
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
+# -------------------------
 # AI Agent Framework
+# -------------------------
 crewai==0.28.0
 crewai-tools==0.2.6
 
+# CrewAI Memory Dependencies (선택적, 메모리 기능용)
+# 도커 환경에서는 chromadb 정상 설치 가능
+gptcache>=0.1.44
+chromadb>=0.4.22,<0.5.0
+pypika>=0.48.9
+onnxruntime>=1.23.0
+
+# -------------------------
 # LLM Integration
+# -------------------------
 openai>=1.0.0
 langchain>=0.1.10,<0.2.0
 langchain-openai>=0.0.5
+langchain-anthropic>=0.1.0  # Claude (Anthropic) 지원
 
+# -------------------------
+# CrewAI 호환성 / 안정성
+# -------------------------
+regex>=2023.12.25,<2024.0.0
+beautifulsoup4>=4.12.3,<5.0.0
+selenium>=4.18.1,<5.0.0
+appdirs>=1.4.4,<2.0.0
+instructor>=0.5.2,<0.6.0
+docx2txt>=0.8,<0.9
+pytest>=8.0.0,<9.0.0
+pyright>=1.1.350,<2.0.0
+
+# -------------------------
 # Document Parsing
+# -------------------------
 pypdf>=3.0.0
+pdfplumber>=0.10.0  # PDF 템플릿 색상 정보 추출
 python-docx>=1.1.0
 python-multipart>=0.0.9
-olefile>=0.46  # HWP 파일 파싱
-chardet>=5.0.0  # 인코딩 자동 감지
+olefile>=0.46          # HWP 파싱
+chardet>=5.0.0          # 인코딩 자동 감지
+# pyhwpx>=1.0.0         # HWPX 템플릿 치환 (Windows 전용, 도커에서는 제외)
 
-# Database & Storage (Optional)
+# -------------------------
+# Document Export
+# -------------------------
+markdown>=3.5.0         # 마크다운 파싱
+weasyprint>=60.0        # HTML → PDF 변환
+
+# -------------------------
+# Database (Optional)
+# -------------------------
 sqlalchemy>=2.0.0
 alembic>=1.13.0
 
+# -------------------------
 # Authentication
+# -------------------------
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 python-dotenv>=1.0.0
 
-# HTTP Client
+# -------------------------
+# HTTP / Async
+# -------------------------
 httpx>=0.26.0
+requests>=2.31.0
 aiofiles>=23.0.0
 
+# -------------------------
 # Utilities
+# -------------------------
 python-dateutil>=2.8.0
 PyYAML>=6.0
-requests>=2.31.0  # Web search tool용
-Jinja2>=3.1.0     # Template rendering
+Jinja2>=3.1.0

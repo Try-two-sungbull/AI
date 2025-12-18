@@ -20,6 +20,11 @@ from .web_search import (
     get_web_search,
     get_law_search
 )
+from .qualification_builder import (
+    QualificationBuilder,
+    get_qualification_builder,
+    build_qualification_block
+)
 
 __all__ = [
     # Rule Engine
@@ -37,4 +42,9 @@ __all__ = [
     "LawDatabaseSearchTool",
     "get_web_search",
     "get_law_search",
+    
+    # Qualification Builder
+    "QualificationBuilder",
+    "get_qualification_builder",
+    "build_qualification_block",
 ]

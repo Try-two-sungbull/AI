@@ -1,8 +1,10 @@
-version: '3.8'
+# version은 최신 docker-compose에서 선택사항
 
 services:
   api:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     container_name: ai-bidding-agent
     ports:
       - "8000:8000"
@@ -14,5 +16,29 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      # 환경 변수 명시적 전달 (env_file이 작동하지 않을 경우 대비)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5-20251101}
+      # Generator Agent 제어 (기본값: false - 사용 안 함)
+      # 나중에 사용하려면 true로 설정: USE_GENERATOR_AGENT=true
+      - USE_GENERATOR_AGENT=${USE_GENERATOR_AGENT:-false}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G

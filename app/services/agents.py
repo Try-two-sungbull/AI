@@ -9,21 +9,39 @@ CrewAI Agents 정의
 
 from crewai import Agent
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 import os
 from app.utils.agent_loader import load_agent, load_all_agents
+from app.config import get_settings
 
 SHARED_LLM = None
+SHARED_CLAUDE_LLM = None
 
 def get_llm():
-    """OpenAI LLM 인스턴스 생성"""
+    """OpenAI LLM 인스턴스 생성 (환경 변수 기반)"""
     global SHARED_LLM
     if SHARED_LLM is None:
+        settings = get_settings()
         SHARED_LLM = ChatOpenAI(
-            model=os.getenv("OPENAI_MODEL", "gpt-4"),
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            model=os.getenv("OPENAI_MODEL", settings.openai_model),
+            openai_api_key=settings.openai_api_key,
             temperature=0.3
         )
     return SHARED_LLM
+
+def get_claude_llm():
+    """Claude LLM 인스턴스 생성 (환경 변수 기반)"""
+    global SHARED_CLAUDE_LLM
+    if SHARED_CLAUDE_LLM is None:
+        settings = get_settings()
+        if not settings.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+        SHARED_CLAUDE_LLM = ChatAnthropic(
+            model=os.getenv("ANTHROPIC_MODEL", settings.anthropic_model),
+            anthropic_api_key=settings.anthropic_api_key,
+            temperature=0.3
+        )
+    return SHARED_CLAUDE_LLM
 
 
 def create_extractor_agent() -> Agent:

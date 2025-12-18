@@ -5,19 +5,37 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # 시스템 패키지 업데이트 및 필수 패키지 설치
+# weasyprint를 위한 시스템 라이브러리 포함
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
+    # weasyprint 의존성
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf-xlib-2.0-0 \
+    libffi-dev \
+    shared-mime-info \
+    # 한글 폰트 (한국어 문서 처리용)
+    fonts-nanum \
+    # 기타 유틸리티
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# requirements.txt 복사 및 의존성 설치
+# 비root 사용자 생성 (보안)
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+
+# requirements.txt 복사 및 의존성 설치 (레이어 캐싱 최적화)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --upgrade fastapi uvicorn
+    pip install --no-cache-dir -r requirements.txt
 
 # 애플리케이션 코드 복사
-COPY . .
+COPY --chown=appuser:appuser . .
+
+# 비root 사용자로 전환
+USER appuser
 
 # 포트 노출
 EXPOSE 8000
@@ -25,6 +43,7 @@ EXPOSE 8000
 # 환경 변수 설정
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 
 # 애플리케이션 실행
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

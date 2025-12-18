@@ -18,7 +18,12 @@ class Settings(BaseSettings):
 
     # OpenAI API
     openai_api_key: str
-    openai_model: str = "gpt-4"
+    openai_model: str = "gpt-4"  # 환경 변수 OPENAI_MODEL로 오버라이드 가능
+    openai_model_validator: str = "gpt-4o-mini"  # Validator용 모델 (환경 변수 OPENAI_MODEL_VALIDATOR로 오버라이드 가능)
+    
+    # Anthropic (Claude) API
+    anthropic_api_key: str = ""  # Claude API 키 (선택사항, Extractor/Generator용)
+    anthropic_model: str = "claude-opus-4-5-20251101"  # 환경 변수 ANTHROPIC_MODEL로 오버라이드 가능
 
     # Database (Optional)
     database_url: str = "sqlite:///./agent.db"
@@ -39,6 +44,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # .env 파일을 명시적으로 로드
+        case_sensitive = False
 
 
 @lru_cache()
