@@ -21,7 +21,7 @@ class ExtractedData(BaseModel):
     item_name: Optional[str] = Field(None, description="품목명")
 
     # 예산 정보
-    estimated_amount: float = Field(0, ge=0, description="추정 금액 (원, VAT 제외)")
+    estimated_amount: Optional[float] = Field(None, ge=0, description="추정 금액 (원, VAT 제외)")
     total_budget_vat: Optional[float] = Field(None, ge=0, description="총 예산 (VAT 포함)")
 
     # 기간 정보
