@@ -1,5 +1,3 @@
-# version은 최신 docker-compose에서 선택사항
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -10,8 +8,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-ai_bidding}
       POSTGRES_INITDB_ARGS: "-E UTF8"
       TZ: Asia/Seoul
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -20,14 +16,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - app-network
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: ai-bidding-agent
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - .:/app
       - /app/__pycache__
@@ -37,44 +35,20 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_bidding}
-      # 환경 변수 명시적 전달 (env_file이 작동하지 않을 경우 대비)
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - SECRET_KEY=${SECRET_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5-20251101}
-      # Generator Agent 제어 (기본값: false - 사용 안 함)
-      # 나중에 사용하려면 true로 설정: USE_GENERATOR_AGENT=true
-      - USE_GENERATOR_AGENT=${USE_GENERATOR_AGENT:-false}
-      # 공공데이터포탈 API (업종코드 조회)
-      - DATA_GO_KR_BASE_URL=${DATA_GO_KR_BASE_URL:-https://apis.data.go.kr/1230000/ao/IndstrytyBaseLawrgltInfoService/getIndstrytyBaseLawrgltInfoList}
-      - DATA_GO_KR_SERVICE_KEY=${DATA_GO_KR_SERVICE_KEY:-}
-      # 기획재정부 고시금액 (중소기업 제한 기준, 2년마다 변경)
-      # 선택적 오버라이드용 (테스트/특수 상황에서만 사용)
-      # 기본값은 코드에 하드코딩되어 있으며, 크롤링으로 자동 확인됨
-      # 설정하지 않으면: 크롤링 → 하드코딩 기본값 순으로 사용
-      - NOTICE_AMOUNT=${NOTICE_AMOUNT:-}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '1.0'
-          memory: 2G
+    networks:
+      - app-network
 
 volumes:
   postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
