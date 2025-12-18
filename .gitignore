@@ -55,6 +55,13 @@ temp/
 tmp/
 uploads/
 
+# Fonts (large binary files)
+fonts/
+*.ttf
+*.otf
+*.woff
+*.woff2
+
 # Test coverage
 .coverage
 htmlcov/

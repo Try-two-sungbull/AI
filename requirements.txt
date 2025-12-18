@@ -64,6 +64,7 @@ anthropic>=0.25.0       # Claude API 직접 호출 (Vision API용)
 # -------------------------
 markdown>=3.5.0         # 마크다운 파싱
 weasyprint>=60.0        # HTML → PDF 변환
+htmldocx>=0.0.9         # HTML → DOCX 변환 (인코딩 문제 해결)
 
 # -------------------------
 # Database (Optional)

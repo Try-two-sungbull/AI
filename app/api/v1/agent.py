@@ -805,23 +805,52 @@ async def classify_only(
     try:
         # 파일 읽기
         content = await file.read()
+        file_extension = file.filename.lower().split('.')[-1]
         
-        # 문서 파싱 (텍스트 추출)
-        raw_text = parse_document(content, file.filename)
+        # HWP 파일인 경우 CrewAI 도구를 사용하도록 설정
+        if file_extension == 'hwp':
+            import base64
+            # HWP 파일은 Base64로 인코딩해서 Extractor Agent가 도구를 사용하도록 함
+            file_content_base64 = base64.b64encode(content).decode('utf-8')
+            
+            # AgentState 생성 (파일 정보 포함)
+            state = AgentState(
+                session_id=session_id,
+                step="extract",
+                raw_text=""  # HWP는 도구로 파싱하므로 빈 텍스트
+            )
+            # 파일 정보를 state에 저장 (도구에서 사용)
+            state.file_content_base64 = file_content_base64
+            state.file_name = file.filename
+            
+            # 저장
+            agent_sessions[session_id] = state
+            
+            # Extractor + Classifier 실행 (HWP 파일 정보 전달)
+            crew_service = BiddingDocumentCrew(state)
+            extracted_data = crew_service.run_extraction_with_file(
+                file_content_base64=file_content_base64,
+                filename=file.filename,
+                use_reflection=True
+            )
+        else:
+            # 일반 파일은 기존 방식대로 파싱
+            raw_text = parse_document(content, file.filename)
+            
+            # AgentState 생성
+            state = AgentState(
+                session_id=session_id,
+                step="extract",
+                raw_text=raw_text
+            )
+            
+            # 저장
+            agent_sessions[session_id] = state
+            
+            # Extractor + Classifier 실행
+            crew_service = BiddingDocumentCrew(state)
+            extracted_data = crew_service.run_extraction(raw_text, use_reflection=True)  # classify에서 리플렉션 활성화
         
-        # AgentState 생성
-        state = AgentState(
-            session_id=session_id,
-            step="extract",
-            raw_text=raw_text
-        )
-        
-        # 저장
-        agent_sessions[session_id] = state
-        
-        # Extractor + Classifier 실행
-        crew_service = BiddingDocumentCrew(state)
-        extracted_data = crew_service.run_extraction(raw_text, use_reflection=True)  # classify에서 리플렉션 활성화
         classification = crew_service.run_classification(extracted_data)
         
         return {

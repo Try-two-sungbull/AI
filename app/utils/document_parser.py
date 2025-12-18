@@ -82,6 +82,15 @@ def parse_document(file_content: bytes, filename: str) -> str:
     elif file_extension in ['docx', 'doc']:
         return parse_docx(file_content)
     elif file_extension == 'hwp':
+        # HWP 파일 직접 파싱
+        # 참고: LibreOffice는 HWP 파일을 직접 읽을 수 없으므로 변환 불가
+        logger.info("=" * 50)
+        logger.info("📄 HWP 파일 직접 파싱 시작...")
+        logger.info(f"   파일명: {filename}")
+        logger.info(f"   파일 크기: {len(file_content)} bytes")
+        logger.info("   ⚠️ 참고: HWP는 한글과컴퓨터 독점 포맷으로 PDF 자동 변환이 불가능합니다.")
+        logger.info("   💡 더 나은 결과를 원하시면 HWP를 PDF로 변환 후 업로드해주세요.")
+        logger.info("=" * 50)
         return parse_hwp(file_content)
     elif file_extension == 'txt':
         return decode_text_with_fallback(file_content)
@@ -215,9 +224,10 @@ def parse_docx(file_content: bytes) -> str:
 
 def parse_hwp(file_content: bytes) -> str:
     """
-    HWP 파일에서 텍스트 추출
+    HWP 파일에서 텍스트 추출 (개선된 버전)
 
     HWP 5.0 이전 버전(OLE 기반) 및 5.0+ 버전 지원
+    실패 시 Claude Vision API를 사용하여 이미지로 변환 후 텍스트 추출
 
     Args:
         file_content: HWP 파일 바이트
@@ -230,7 +240,12 @@ def parse_hwp(file_content: bytes) -> str:
 
         # HWP 5.0+ (ZIP 기반) 확인
         if file_content[:2] == b'PK':
-            return parse_hwp_50_plus(file_content)
+            try:
+                return parse_hwp_50_plus(file_content)
+            except Exception as e:
+                logger.warning(f"HWP 5.0+ 파싱 실패, Claude Vision API 시도: {str(e)}")
+                # Claude Vision API fallback
+                return parse_hwp_with_claude_vision(file_content)
 
         # HWP 5.0 이전 버전 (OLE 기반)
         if not olefile.isOleFile(hwp_file):
@@ -248,14 +263,22 @@ def parse_hwp(file_content: bytes) -> str:
                     stream = ole.openstream(dir_entry)
                     data = stream.read()
 
-                    # 간단한 텍스트 추출 (HWP 구조는 복잡하므로 기본적인 추출만)
+                    # 개선된 텍스트 추출
                     # 다양한 인코딩 시도
                     try:
                         decoded_text = decode_text_with_fallback(data)
-                        # 제어 문자 제거
-                        cleaned = ''.join(char for char in decoded_text if char.isprintable() or char in ['\n', '\r', '\t'])
+                        # 제어 문자 제거 (하지만 줄바꿈은 유지)
+                        cleaned = ''.join(
+                            char for char in decoded_text 
+                            if char.isprintable() or char in ['\n', '\r', '\t', ' ']
+                        )
+                        # 연속된 공백 정리
+                        import re
+                        cleaned = re.sub(r'[ \t]+', ' ', cleaned)  # 공백 정리
+                        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)  # 연속된 줄바꿈 정리
+                        
                         if cleaned.strip():
-                            text_parts.append(cleaned)
+                            text_parts.append(cleaned.strip())
                     except:
                         pass
                 except:
@@ -266,20 +289,26 @@ def parse_hwp(file_content: bytes) -> str:
         full_text = '\n'.join(text_parts)
 
         if not full_text.strip():
-            raise ValueError(
-                "HWP 파일에서 텍스트를 추출할 수 없습니다. "
-                "PDF로 변환 후 업로드를 권장합니다."
-            )
+            logger.warning("HWP OLE 파싱으로 텍스트를 추출할 수 없어 Claude Vision API를 시도합니다.")
+            # Claude Vision API fallback
+            return parse_hwp_with_claude_vision(file_content)
 
         return clean_text(full_text)
 
     except Exception as e:
-        raise ValueError(f"HWP 파싱 실패: {str(e)}")
+        logger.warning(f"HWP 파싱 실패, Claude Vision API 시도: {str(e)}")
+        # Claude Vision API fallback
+        try:
+            return parse_hwp_with_claude_vision(file_content)
+        except Exception as vision_error:
+            raise ValueError(
+                f"HWP 파싱 실패 (모든 방법 시도): 기본 파싱={str(e)}, Claude Vision={str(vision_error)}"
+            )
 
 
 def parse_hwp_50_plus(file_content: bytes) -> str:
     """
-    HWP 5.0+ (ZIP 기반) 파일에서 텍스트 추출
+    HWP 5.0+ (ZIP 기반) 파일에서 텍스트 추출 (개선된 버전)
 
     Args:
         file_content: HWP 파일 바이트
@@ -294,20 +323,60 @@ def parse_hwp_50_plus(file_content: bytes) -> str:
         hwp_file = io.BytesIO(file_content)
         with zipfile.ZipFile(hwp_file, 'r') as zf:
             text_parts = []
+            section_order = []
 
-            # section*.xml 파일들에서 텍스트 추출
-            for filename in zf.namelist():
-                if filename.startswith('Contents/section') and filename.endswith('.xml'):
+            # section*.xml 파일들을 순서대로 정렬
+            section_files = [f for f in zf.namelist() 
+                           if f.startswith('Contents/section') and f.endswith('.xml')]
+            section_files.sort(key=lambda x: int(x.split('section')[1].split('.')[0]) if x.split('section')[1].split('.')[0].isdigit() else 999)
+
+            # 각 섹션에서 텍스트 추출
+            for filename in section_files:
+                try:
                     xml_content = zf.read(filename)
-
+                    # 인코딩 문제 해결: UTF-8로 디코딩 시도
                     try:
-                        root = ET.fromstring(xml_content)
-                        # t 태그에서 텍스트 추출
-                        for elem in root.iter():
-                            if elem.text and elem.text.strip():
-                                text_parts.append(elem.text.strip())
-                    except:
-                        pass
+                        xml_text = xml_content.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # UTF-8 실패 시 cp949 시도
+                        try:
+                            xml_text = xml_content.decode('cp949', errors='ignore')
+                        except:
+                            xml_text = xml_content.decode('utf-8', errors='replace')
+                    
+                    root = ET.fromstring(xml_text)
+                    section_text = []
+                    
+                    # 더 정확한 텍스트 추출: 특정 태그 우선 처리
+                    # t 태그 (텍스트), tc 태그 (표 셀), li 태그 (목록 항목) 등
+                    for elem in root.iter():
+                        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                        
+                        # 텍스트 노드 처리
+                        if elem.text and elem.text.strip():
+                            text = elem.text.strip()
+                            # 중복 제거 및 의미있는 텍스트만 추가
+                            if text and len(text) > 0:
+                                section_text.append(text)
+                        
+                        # 표 셀 처리 (tc 태그)
+                        if tag == 'tc':
+                            cell_texts = []
+                            for sub_elem in elem.iter():
+                                if sub_elem.text and sub_elem.text.strip():
+                                    cell_texts.append(sub_elem.text.strip())
+                            if cell_texts:
+                                section_text.append(' | '.join(cell_texts))
+                    
+                    if section_text:
+                        # 섹션 구분을 위해 빈 줄 추가
+                        if text_parts:
+                            text_parts.append('')
+                        text_parts.extend(section_text)
+                        
+                except Exception as e:
+                    logger.warning(f"HWP 섹션 {filename} 파싱 실패: {str(e)}")
+                    continue
 
             full_text = '\n'.join(text_parts)
 
@@ -478,6 +547,92 @@ def parse_pdf_with_claude_vision(file_content: bytes) -> str:
         error_detail = str(e)
         logger.error(f"Claude Vision API 사용 중 예상치 못한 오류: {error_detail}", exc_info=True)
         raise ValueError(f"Claude Vision API 사용 실패: {error_detail}")
+
+
+def parse_hwp_with_claude_vision(file_content: bytes) -> str:
+    """
+    Claude Vision API를 사용하여 HWP에서 텍스트 추출 (최종 fallback)
+    
+    HWP를 PDF로 변환한 후 이미지로 변환하여 Claude에게 텍스트 추출을 요청합니다.
+    
+    Args:
+        file_content: HWP 파일 바이트
+    
+    Returns:
+        추출된 텍스트
+    """
+    import base64
+    import tempfile
+    import subprocess
+    from app.config import get_settings
+    
+    settings = get_settings()
+    
+    # Claude API 키 확인
+    if not settings.anthropic_api_key:
+        raise ValueError("Claude Vision API를 사용하려면 ANTHROPIC_API_KEY가 필요합니다.")
+    
+    try:
+        # HWP를 PDF로 변환 (LibreOffice 사용)
+        logger.info("HWP → PDF 변환 시도 (Claude Vision API용)...")
+        
+        # LibreOffice 경로 찾기
+        soffice_paths = [
+            "/usr/bin/soffice",
+            "/opt/homebrew/bin/soffice",
+            "/usr/local/bin/soffice",
+        ]
+        soffice_path = None
+        for path in soffice_paths:
+            import os
+            if os.path.exists(path):
+                soffice_path = path
+                break
+        
+        if not soffice_path:
+            raise ValueError("LibreOffice가 설치되지 않았습니다. HWP → PDF 변환을 위해 필요합니다.")
+        
+        # 임시 디렉토리 생성
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # HWP 파일 저장
+            hwp_path = os.path.join(temp_dir, "input.hwp")
+            with open(hwp_path, "wb") as f:
+                f.write(file_content)
+            
+            # LibreOffice로 PDF 변환
+            result = subprocess.run(
+                [
+                    soffice_path,
+                    "--headless",
+                    "--convert-to", "pdf",
+                    "--outdir", temp_dir,
+                    hwp_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"HWP → PDF 변환 실패: {result.stderr or result.stdout}")
+            
+            # 변환된 PDF 파일 읽기
+            pdf_path = os.path.join(temp_dir, "input.pdf")
+            if not os.path.exists(pdf_path):
+                raise RuntimeError("PDF 파일이 생성되지 않았습니다.")
+            
+            with open(pdf_path, "rb") as f:
+                pdf_content = f.read()
+            
+            logger.info("✅ HWP → PDF 변환 성공, Claude Vision API로 텍스트 추출 시작...")
+            
+            # PDF를 Claude Vision API로 처리
+            return parse_pdf_with_claude_vision(pdf_content)
+            
+    except Exception as e:
+        error_detail = str(e)
+        logger.error(f"HWP Claude Vision API 사용 실패: {error_detail}", exc_info=True)
+        raise ValueError(f"HWP Claude Vision API 사용 실패: {error_detail}")
 
 
 def clean_text(text: str) -> str:

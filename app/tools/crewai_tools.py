@@ -14,6 +14,14 @@ from app.tools.template_selector import get_template_selector
 from app.tools.field_mapper import get_field_mapper
 from app.tools.web_crawler import get_crawler_tools
 from app.utils.notice_amount_crawler import get_latest_notice_amount
+from app.utils.document_parser import parse_document
+from app.utils.document_converter import (
+    html_to_pdf,
+    html_to_docx_with_libreoffice,
+    html_to_hwp_with_libreoffice
+)
+import base64
+import io
 
 
 @tool("Rule Engine 분류 도구")
@@ -219,7 +227,7 @@ def get_classifier_tools():
 
 def get_generator_tools():
     """Generator Agent가 사용할 Tool 목록"""
-    return [field_mapper_tool]
+    return [field_mapper_tool, html_to_pdf_tool, html_to_docx_tool, html_to_hwp_tool]
 
 
 def get_validator_tools():
@@ -230,10 +238,142 @@ def get_validator_tools():
     return crawler_tools + [notice_amount_tool]  # 크롤링 도구 + 고시금액 조회 도구 추가
 
 
+@tool("HWP 파일 파싱 도구")
+def hwp_parser_tool(file_content_base64: str, filename: str) -> str:
+    """
+    HWP 파일에서 텍스트를 추출합니다.
+    
+    HWP 파일은 한글과컴퓨터의 독점 포맷입니다.
+    - HWP 5.0 이전 버전 (OLE 기반) 지원
+    - HWP 5.0+ 버전 (ZIP 기반) 지원
+    - 자동으로 인코딩을 감지하여 텍스트 추출
+    
+    ⚠️ 참고: HWP는 PDF로 자동 변환할 수 없습니다.
+    더 나은 결과를 원하시면 HWP를 PDF로 변환 후 업로드해주세요.
+    
+    Args:
+        file_content_base64: HWP 파일 내용 (Base64 인코딩된 문자열)
+        filename: 파일명 (예: "공고문.hwp")
+        
+    Returns:
+        추출된 텍스트 (문자열)
+    """
+    try:
+        # Base64 디코딩
+        file_content = base64.b64decode(file_content_base64)
+        
+        # HWP 파일 파싱
+        text = parse_document(file_content, filename)
+        
+        if not text or not text.strip():
+            return "⚠️ HWP 파일에서 텍스트를 추출할 수 없습니다. PDF로 변환 후 업로드를 권장합니다."
+        
+        return text
+        
+    except Exception as e:
+        return f"❌ HWP 파싱 실패: {str(e)}\n\n💡 해결 방법: HWP 파일을 PDF로 변환 후 업로드해주세요."
+
+
+@tool("문서 파싱 도구 (범용)")
+def document_parser_tool(file_content_base64: str, filename: str) -> str:
+    """
+    다양한 문서 형식(PDF, DOCX, HWP, TXT)에서 텍스트를 추출합니다.
+    
+    지원 형식:
+    - PDF: pypdf, pdfplumber, Claude Vision API (fallback)
+    - DOCX: python-docx
+    - HWP: 직접 파싱 (HWP 5.0 이전/이후 모두 지원)
+    - TXT: 다양한 인코딩 자동 감지
+    
+    Args:
+        file_content_base64: 파일 내용 (Base64 인코딩된 문자열)
+        filename: 파일명 (확장자 포함, 예: "공고문.pdf", "발주계획서.hwp")
+        
+    Returns:
+        추출된 텍스트 (문자열)
+    """
+    try:
+        # Base64 디코딩
+        file_content = base64.b64decode(file_content_base64)
+        
+        # 문서 파싱
+        text = parse_document(file_content, filename)
+        
+        if not text or not text.strip():
+            return f"⚠️ {filename}에서 텍스트를 추출할 수 없습니다."
+        
+        return text
+        
+    except Exception as e:
+        return f"❌ 문서 파싱 실패: {str(e)}"
+
+
+@tool("HTML을 PDF로 변환 도구")
+def html_to_pdf_tool(html_content: str) -> str:
+    """
+    HTML 내용을 PDF 파일로 변환합니다.
+    
+    Args:
+        html_content: HTML 형식의 텍스트 (완전한 HTML 문서 또는 HTML fragment)
+        
+    Returns:
+        Base64 인코딩된 PDF 파일 내용 (문자열)
+    """
+    try:
+        pdf_bytes = html_to_pdf(html_content)
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        return f"✅ PDF 변환 완료 (크기: {len(pdf_bytes)} bytes)\nBase64: {pdf_base64[:100]}..."
+    except Exception as e:
+        return f"❌ HTML → PDF 변환 실패: {str(e)}"
+
+
+@tool("HTML을 DOCX로 변환 도구")
+def html_to_docx_tool(html_content: str) -> str:
+    """
+    HTML 내용을 DOCX 파일로 변환합니다 (LibreOffice 사용).
+    
+    Args:
+        html_content: HTML 형식의 텍스트 (완전한 HTML 문서 또는 HTML fragment)
+        
+    Returns:
+        Base64 인코딩된 DOCX 파일 내용 (문자열)
+    """
+    try:
+        docx_bytes = html_to_docx_with_libreoffice(html_content)
+        docx_base64 = base64.b64encode(docx_bytes).decode('utf-8')
+        return f"✅ DOCX 변환 완료 (크기: {len(docx_bytes)} bytes)\nBase64: {docx_base64[:100]}..."
+    except Exception as e:
+        return f"❌ HTML → DOCX 변환 실패: {str(e)}"
+
+
+@tool("HTML을 HWP로 변환 도구")
+def html_to_hwp_tool(html_content: str) -> str:
+    """
+    HTML 내용을 HWP 파일로 변환합니다 (LibreOffice 사용).
+    
+    Args:
+        html_content: HTML 형식의 텍스트 (완전한 HTML 문서 또는 HTML fragment)
+        
+    Returns:
+        Base64 인코딩된 HWP 파일 내용 (문자열)
+    """
+    try:
+        hwp_bytes = html_to_hwp_with_libreoffice(html_content)
+        hwp_base64 = base64.b64encode(hwp_bytes).decode('utf-8')
+        return f"✅ HWP 변환 완료 (크기: {len(hwp_bytes)} bytes)\nBase64: {hwp_base64[:100]}..."
+    except Exception as e:
+        return f"❌ HTML → HWP 변환 실패: {str(e)}"
+
+
 def get_extractor_tools():
     """Extractor Agent가 사용할 Tool 목록"""
-    # Extractor도 필요시 크롤링 도구 사용 가능
-    return []
+    # Extractor는 문서 파싱 도구를 사용할 수 있음
+    return [document_parser_tool, hwp_parser_tool]
+
+
+def get_converter_tools():
+    """문서 변환 도구 목록 (Generator Agent 등에서 사용 가능)"""
+    return [html_to_pdf_tool, html_to_docx_tool, html_to_hwp_tool]
 
 
 def get_classifier_tools_with_notice():
