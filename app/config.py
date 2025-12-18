@@ -3,7 +3,9 @@
 """
 
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -41,11 +43,43 @@ class Settings(BaseSettings):
     law_api_base_url: str = "https://www.law.go.kr/DRF"
     law_api_key: str = ""
 
+    # 공공데이터포탈 API (업종코드 조회)
+    data_go_kr_base_url: str = "https://apis.data.go.kr/1230000/ao/IndstrytyBaseLawrgltInfoService/getIndstrytyBaseLawrgltInfoList"
+    data_go_kr_service_key: str = ""
+
+    # 기획재정부 고시금액 (중소기업 제한 기준)
+    # 선택적 오버라이드용 (테스트/특수 상황에서만 사용)
+    # 기본값은 코드에 하드코딩되어 있으며, 크롤링으로 자동 확인됨
+    # 설정하지 않으면: 크롤링 → 하드코딩 기본값 순으로 사용
+    notice_amount: Optional[int] = None  # 원 단위 (예: 230000000 = 2억 3천만 원)
+    
+    # 파일 저장 경로 (선택적, PostgreSQL 사용 시 불필요할 수 있음)
+    # None이면 파일 저장 기능 비활성화
+    file_storage_path: Optional[str] = None  # 파일 저장 경로
+    
+    # 나라장터 API
+    nara_base_url: str = "https://apis.data.go.kr/1230000/BidPublicInfoService/getBidPblancListInfoThng"  # 나라장터 API 기본 URL (전체 엔드포인트 포함)
+    nara_api_key: str = ""  # 나라장터 API 키
+
+    @field_validator('notice_amount', mode='before')
+    @classmethod
+    def parse_notice_amount(cls, v):
+        """빈 문자열을 None으로 변환"""
+        if v == '' or v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return int(v)
+            except ValueError:
+                return None
+        return v
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         # .env 파일을 명시적으로 로드
         case_sensitive = False
+        extra = "allow"  # 추가 필드 허용
 
 
 @lru_cache()

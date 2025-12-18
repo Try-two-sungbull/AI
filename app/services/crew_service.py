@@ -264,7 +264,8 @@ class BiddingDocumentCrew:
         extracted_data: Dict[str, Any],
         template_id: str = None,
         announcement_type: str = None,
-        law_references: str = ""
+        law_references: str = "",
+        template_info: Dict[str, Any] = None
     ) -> str:
         """
         STEP 4: Document Assembly (Non-LLM Pipeline 단계)
@@ -291,15 +292,15 @@ class BiddingDocumentCrew:
         """
         from app.tools.template_selector import get_template_selector
         from app.tools.field_mapper import get_field_mapper
-        from app.models.schemas import ClassificationResult
+        from app.models.schemas import ClassificationResult, DocumentTemplate
+        from app.infra.db.database import get_db
+        from app.infra.db.models import NoticeTemplate
 
         # 1. 템플릿 선택 (분류 결과 기반)
         classification = self.state.classification or {}
         if not announcement_type:
             announcement_type = classification.get("recommended_type", "적격심사")
 
-        template_selector = get_template_selector()
-        
         # ClassificationResult 객체 생성 (템플릿 선택용)
         classification_result = ClassificationResult(
             recommended_type=announcement_type,
@@ -308,12 +309,78 @@ class BiddingDocumentCrew:
             alternative_types=classification.get("alternative_types", [])
         )
         
-        # 도커 환경에서는 hwpx 사용 불가 (Windows 전용), 마크다운 템플릿 사용
-        # 로컬 Windows 환경에서는 hwpx 사용 가능
-        import sys
-        preferred_format = "md" if sys.platform != "win32" else "hwpx"
-        template = template_selector.select_template(classification_result, preferred_format=preferred_format)
-        print(f"✅ 템플릿 선택: {template.template_type} ({template.template_id}, 형식: {template.template_format})")
+        # 템플릿 로드 우선순위:
+        # 1. template_info에 template_id가 있으면 DB에서 해당 ID로 조회
+        # 2. template_id가 없으면 DB에서 최신 템플릿 조회
+        # 3. DB에도 없으면 파일 시스템 기본 템플릿 사용
+        template = None
+        template_content = None
+        
+        # 1. template_id로 DB에서 조회
+        if template_info and template_info.get("template_id"):
+            db_template_id = template_info.get("template_id")
+            try:
+                db = next(get_db())
+                # ID로 조회하고, template_type도 일치하는지 확인 (안전성)
+                db_template = (
+                    db.query(NoticeTemplate)
+                    .filter(NoticeTemplate.id == db_template_id)
+                    .filter(NoticeTemplate.template_type == announcement_type)
+                    .first()
+                )
+                if db_template:
+                    template_content = db_template.content
+                    template = DocumentTemplate(
+                        template_id=f"db_template_{announcement_type}_{db_template.id}",
+                        template_type=announcement_type,
+                        content=template_content,
+                        placeholders=[],
+                        template_format="md",
+                        template_path=None
+                    )
+                    print(f"✅ DB에서 지정된 템플릿 로드: ID={db_template_id}, 유형={announcement_type}, 버전={db_template.version}")
+                else:
+                    # ID는 있지만 template_type이 다른 경우
+                    check_template = db.query(NoticeTemplate).filter(NoticeTemplate.id == db_template_id).first()
+                    if check_template:
+                        print(f"⚠️ 지정된 템플릿 ID({db_template_id})는 존재하지만, 유형이 다릅니다. (요청: {announcement_type}, 실제: {check_template.template_type})")
+                    else:
+                        print(f"⚠️ 지정된 템플릿 ID({db_template_id})를 찾을 수 없습니다.")
+                    print(f"   최신 템플릿 사용")
+            except Exception as db_error:
+                print(f"⚠️ DB 템플릿 조회 실패: {str(db_error)}")
+        
+        # 2. template_id가 없거나 지정된 템플릿을 찾지 못한 경우, DB에서 최신 템플릿 조회
+        if not template:
+            try:
+                db = next(get_db())
+                latest_template = (
+                    db.query(NoticeTemplate)
+                    .filter(NoticeTemplate.template_type == announcement_type)
+                    .order_by(NoticeTemplate.created_at.desc())
+                    .first()
+                )
+                if latest_template:
+                    template_content = latest_template.content
+                    template = DocumentTemplate(
+                        template_id=f"db_template_{announcement_type}_{latest_template.id}",
+                        template_type=announcement_type,
+                        content=template_content,
+                        placeholders=[],
+                        template_format="md",
+                        template_path=None
+                    )
+                    print(f"✅ DB에서 최신 템플릿 로드: {announcement_type} (버전: {latest_template.version}, 생성일: {latest_template.created_at})")
+            except Exception as db_error:
+                print(f"⚠️ DB 템플릿 조회 실패: {str(db_error)}")
+        
+        # 3. DB에도 없으면 파일 시스템 기본 템플릿 사용
+        if not template:
+            template_selector = get_template_selector()
+            import sys
+            preferred_format = "md" if sys.platform != "win32" else "hwpx"
+            template = template_selector.select_template(classification_result, preferred_format=preferred_format)
+            print(f"✅ 파일 시스템 기본 템플릿 선택: {template.template_type} ({template.template_id}, 형식: {template.template_format})")
 
         # 분류 결과를 extracted_data에 포함 (Generator Guard용)
         extracted_data_with_classification = extracted_data.copy()
@@ -726,7 +793,8 @@ class BiddingDocumentCrew:
         self,
         document_text: str,
         law_references: str = "",
-        max_iterations: int = 10
+        max_iterations: int = 10,
+        template_info: Dict[str, Any] = None
     ) -> str:
         """
         전체 파이프라인 실행 - 완벽한 문서가 나올 때까지 반복
@@ -759,7 +827,8 @@ class BiddingDocumentCrew:
         current_document = self.run_generation(
             extracted_data,
             announcement_type=announcement_type,
-            law_references=law_references
+            law_references=law_references,
+            template_info=template_info
         )
 
         # ============================================================

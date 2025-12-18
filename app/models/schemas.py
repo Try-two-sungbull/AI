@@ -219,3 +219,19 @@ class UserFeedback(BaseModel):
                 "modified_content": None
             }
         }
+
+
+class SaveTemplateRequest(BaseModel):
+    """
+    템플릿 저장 요청 모델
+    """
+    template_type: str = Field(..., description="템플릿 유형 (예: 적격심사, 소액수의)")
+    markdown_text: str = Field(..., description="마크다운 템플릿 내용")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "template_type": "적격심사",
+                "markdown_text": "# 입찰공고\n\n## 1. 입찰에 부치는 사항\n..."
+            }
+        }

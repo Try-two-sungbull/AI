@@ -134,3 +134,4 @@ def get_claude_explainer() -> ClaudeLawExplainer:
         _claude_explainer = ClaudeLawExplainer()
     return _claude_explainer
 
+

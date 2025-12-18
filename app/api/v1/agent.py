@@ -10,8 +10,8 @@ Agent API Endpoints
 템플릿과 법령 참조는 시스템이 자동으로 처리합니다.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Response, Request, Body
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
 import json
 import io
 from typing import Optional, Dict, Any
@@ -19,10 +19,11 @@ import uuid
 from datetime import datetime
 import tempfile
 import os
+from pathlib import Path
 
 from app.infra.db.database import get_db, engine, Base
 from app.models.agent_state import AgentState
-from app.models.schemas import UserFeedback
+from app.models.schemas import UserFeedback, SaveTemplateRequest
 from app.services.crew_service import BiddingDocumentCrew
 from app.services.nara_bid_service import get_latest_bid_notice
 from app.utils.document_parser import parse_document
@@ -83,7 +84,8 @@ def detect_file_type(content: bytes) -> str:
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    format: Optional[str] = Query("markdown", description="출력 형식: markdown, pdf, docx")
+    format: Optional[str] = Query("markdown", description="출력 형식: markdown, pdf, docx"),
+    template_id: Optional[int] = Query(None, description="템플릿 ID (DB에서 조회, validate-template에서 생성된 템플릿)")
 ):
     """
     문서 업로드 + 즉시 Agent 실행 (통합)
@@ -98,6 +100,7 @@ async def upload_document(
     Args:
         file: 구매계획서 파일
         format: 출력 형식 (markdown, pdf, docx)
+        template_id: 템플릿 ID (DB에서 조회, validate-template에서 생성된 템플릿 사용 시)
     """
     # 세션 ID 생성
     session_id = str(uuid.uuid4())
@@ -124,11 +127,18 @@ async def upload_document(
         # 법령 참조는 시스템이 자동으로 선택
         law_references = get_default_law_references()
 
+        # 템플릿 정보 전달 (template_id만 사용)
+        template_info = {}
+        if template_id:
+            template_info["template_id"] = template_id
+            print(f"📋 템플릿 ID 지정: {template_id}")
+
         # 전체 파이프라인 실행 - 완성된 문서 String 반환
         final_document = crew_service.run_full_pipeline(
             document_text=raw_text,
             law_references=law_references,
-            max_iterations=10  # 최대 10회 반복
+            max_iterations=10,  # 최대 10회 반복
+            template_info=template_info  # 템플릿 정보 전달
         )
 
         # 문서 길이 확인 (JSON 직렬화 문제 진단용)
@@ -420,20 +430,46 @@ async def submit_feedback(feedback: UserFeedback):
 
 @router.post("/templates/")
 async def save_template(
-    template_type: str,
-    markdown_text: str,
+    template_type: str = Query(..., description="템플릿 유형 (예: 적격심사, 소액수의)"),
+    markdown_text: str = Body(..., media_type="text/plain", description="마크다운 템플릿 내용"),
     db: Session = Depends(get_db),
 ):
-    """마크다운 문자열을 그대로 DB에 저장"""
-    new_template = NoticeTemplate(
-        template_type=template_type,
-        content=markdown_text,
-        summary="에이전트에 의해 자동 생성됨",
-    )
-    db.add(new_template)
-    db.commit()
-    db.refresh(new_template)
-    return {"message": "템플릿이 저장되었습니다."}
+    """
+    템플릿을 DB에 저장하고 저장된 템플릿 내용을 text/plain으로 반환
+    
+    요청: Content-Type: text/plain (마크다운 텍스트 직접 전송)
+    응답: text/plain (저장된 마크다운 템플릿 내용)
+    
+    Args:
+        template_type: 템플릿 유형 (쿼리 파라미터)
+        markdown_text: 마크다운 템플릿 내용 (text/plain body)
+        db: 데이터베이스 세션
+    
+    Returns:
+        PlainTextResponse: 저장된 마크다운 템플릿 내용
+    """
+    try:
+        if not markdown_text.strip():
+            raise HTTPException(status_code=400, detail="마크다운 텍스트가 비어있습니다.")
+        
+        new_template = NoticeTemplate(
+            template_type=template_type,
+            content=markdown_text,
+            summary="에이전트에 의해 자동 생성됨",
+        )
+        db.add(new_template)
+        db.commit()
+        db.refresh(new_template)
+        
+        # 저장된 템플릿 내용을 text/plain으로 반환
+        return PlainTextResponse(
+            content=markdown_text,
+            media_type="text/plain; charset=utf-8"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"템플릿 저장 실패: {str(e)}")
 
 
 @router.get("/templates/latest")
@@ -698,6 +734,7 @@ async def validate_template(
 
         # 6. 업데이트된 템플릿을 DB에 저장 (변경사항이 있을 때만)
         new_template_row = None
+        saved_filename = None  # 저장된 파일명 (응답에 포함)
         if comparison_result.get("has_changes"):
             updated_template = comparison_result.get("updated_template", "")
             if updated_template:
@@ -742,6 +779,39 @@ async def validate_template(
                     f"type={new_template_row.template_type}, version={new_template_row.version}"
                 )
 
+                # 파일로도 저장 (버전 관리용 - 날짜/시간 포함 파일명)
+                saved_filename = None
+                try:
+                    # 프로젝트 루트의 templates 디렉토리
+                    project_root = Path(__file__).parent.parent.parent
+                    templates_dir = project_root / "templates"
+                    templates_dir.mkdir(parents=True, exist_ok=True)
+
+                    # 템플릿 타입에 따른 파일명 매핑
+                    template_file_mapping = {
+                        "소액수의": "lowest_price",
+                        "최저가낙찰": "lowest_price",
+                        "적격심사": "qualification_review",
+                        "협상계약": "negotiation",
+                    }
+
+                    base_filename = template_file_mapping.get(cntrctCnclsMthdNm, cntrctCnclsMthdNm.lower())
+                    
+                    # 날짜/시간 형식: YYYYMMDD_HHMMSS
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"{base_filename}_{timestamp}.md"
+                    saved_filename = filename  # 응답에 포함할 파일명 저장
+                    file_path = templates_dir / filename
+
+                    # 파일 저장
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(updated_template)
+
+                    print(f"✅ 템플릿 파일 저장 완료: {file_path}")
+                except Exception as file_error:
+                    print(f"⚠️ 템플릿 파일 저장 실패: {str(file_error)}")
+                    # 파일 저장 실패해도 DB 저장은 성공했으므로 계속 진행
+
         # 7. 응답 생성 (변경점 및 저장 결과 반환)
         response_data = {
             "status": "unchanged" if not comparison_result.get("has_changes") else "changed",
@@ -753,6 +823,7 @@ async def validate_template(
                 "id": new_template_row.id,
                 "version": new_template_row.version,
                 "created_at": new_template_row.created_at.isoformat() if new_template_row and new_template_row.created_at else None,
+                "filename": saved_filename,  # 저장된 파일명 추가
             } if new_template_row else None,
         }
 
