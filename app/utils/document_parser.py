@@ -82,6 +82,15 @@ def parse_document(file_content: bytes, filename: str) -> str:
     elif file_extension in ['docx', 'doc']:
         return parse_docx(file_content)
     elif file_extension == 'hwp':
+        # HWP 파일 직접 파싱
+        # 참고: LibreOffice는 HWP 파일을 직접 읽을 수 없으므로 변환 불가
+        logger.info("=" * 50)
+        logger.info("📄 HWP 파일 직접 파싱 시작...")
+        logger.info(f"   파일명: {filename}")
+        logger.info(f"   파일 크기: {len(file_content)} bytes")
+        logger.info("   ⚠️ 참고: HWP는 한글과컴퓨터 독점 포맷으로 PDF 자동 변환이 불가능합니다.")
+        logger.info("   💡 더 나은 결과를 원하시면 HWP를 PDF로 변환 후 업로드해주세요.")
+        logger.info("=" * 50)
         return parse_hwp(file_content)
     elif file_extension == 'txt':
         return decode_text_with_fallback(file_content)
@@ -298,10 +307,16 @@ def parse_hwp_50_plus(file_content: bytes) -> str:
             # section*.xml 파일들에서 텍스트 추출
             for filename in zf.namelist():
                 if filename.startswith('Contents/section') and filename.endswith('.xml'):
-                    xml_content = zf.read(filename)
-
                     try:
-                        root = ET.fromstring(xml_content)
+                        xml_content = zf.read(filename)
+                        # 인코딩 문제 해결: UTF-8로 디코딩 시도
+                        try:
+                            xml_text = xml_content.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # UTF-8 실패 시 cp949 시도
+                            xml_text = xml_content.decode('cp949', errors='ignore')
+                        
+                        root = ET.fromstring(xml_text)
                         # t 태그에서 텍스트 추출
                         for elem in root.iter():
                             if elem.text and elem.text.strip():
