@@ -1,89 +1,62 @@
-# version은 최신 docker-compose에서 선택사항
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: ai-bidding-postgres
+
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-ai_bidding}
       POSTGRES_INITDB_ARGS: "-E UTF8"
       TZ: Asia/Seoul
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
+
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        - NARA_API_KEY=${NARA_API_KEY:-}
-        - OPENAI_API_KEY=${OPENAI_API_KEY}
-        - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-        - SECRET_KEY=${SECRET_KEY}
-        - DATA_GO_KR_SERVICE_KEY=${DATA_GO_KR_SERVICE_KEY:-}
-        - LAW_API_KEY=${LAW_API_KEY:-}
+
     container_name: ai-bidding-agent
-    ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
-      - /app/__pycache__
-      - /app/.pytest_cache
-    env_file:
-      - .env
+
+    expose:
+      - "80"
+
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      # Database
+
+      # DB
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_bidding}
-      # 모델 설정
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5-20251101}
-      # Generator Agent 제어 (기본값: false - 사용 안 함)
-      - USE_GENERATOR_AGENT=${USE_GENERATOR_AGENT:-false}
-      # 공공데이터포탈 API 기본 URL
-      - DATA_GO_KR_BASE_URL=${DATA_GO_KR_BASE_URL:-https://apis.data.go.kr/1230000/ao/IndstrytyBaseLawrgltInfoService/getIndstrytyBaseLawrgltInfoList}
-      # 나라장터 API 기본 URL
-      - NARA_BASE_URL=${NARA_BASE_URL:-https://apis.data.go.kr/1230000/BidPublicInfoService/getBidPblancListInfoThng}
-      # 기타 선택적 환경 변수 (기본값)
-      - NOTICE_AMOUNT=${NOTICE_AMOUNT:-}
-      - FILE_STORAGE_PATH=${FILE_STORAGE_PATH:-}
-      # API 키 명시적 전달 (env_file이 작동하지 않을 경우 대비)
-      - NARA_API_KEY=${NARA_API_KEY:-}
+
+      # LLM
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - SECRET_KEY=${SECRET_KEY}
-      - DATA_GO_KR_SERVICE_KEY=${DATA_GO_KR_SERVICE_KEY:-}
-      - LAW_API_KEY=${LAW_API_KEY:-}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 80
+
     depends_on:
       postgres:
         condition: service_healthy
+
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '1.0'
-          memory: 2G
+
+    labels:
+      - "coolify.managed=true"
+
 
 volumes:
   postgres_data:
