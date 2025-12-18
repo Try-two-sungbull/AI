@@ -133,11 +133,13 @@ class AgentConfigLoader:
         from app.tools.crewai_tools import (
             get_classifier_tools,
             get_generator_tools,
-            get_validator_tools
+            get_validator_tools,
+            get_classifier_tools_with_notice
         )
         
         if agent_name == "classifier":
-            return get_classifier_tools()
+            # Classifier는 고시금액 조회도 필요할 수 있음
+            return get_classifier_tools_with_notice()
         elif agent_name == "generator":
             return get_generator_tools()
         elif agent_name == "validator":

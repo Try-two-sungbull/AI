@@ -12,6 +12,8 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
+from app.utils.industry_api_client import get_industry_api_client
+
 
 class QualificationBuilder:
     """
@@ -22,15 +24,7 @@ class QualificationBuilder:
     """
 
     def __init__(self):
-        # 나라장터 업종 DB (실제로는 API 호출 필요)
-        self.industry_db = {
-            "4608": {
-                "name": "고압가스판매업",
-                "law": "고압가스안전관리법",
-                "section": "제4조"
-            }
-            # 실제로는 나라장터 API에서 조회
-        }
+        self.industry_api = get_industry_api_client()
 
     def build_qualification_block(
         self,
@@ -173,16 +167,21 @@ class QualificationBuilder:
         """
         업종코드로 업종 정보 조회
         
-        실제로는 나라장터 API 호출 필요
-        현재는 내부 DB에서 조회
+        공공데이터포탈 API를 통해 조회합니다.
         
         Args:
             industry_code: 업종코드
         
         Returns:
             업종 정보 딕셔너리 또는 None
+            {
+                "law": "법령명",
+                "section": "조항",
+                "name": "업종명",
+                "code": "업종코드"
+            }
         """
-        return self.industry_db.get(industry_code)
+        return self.industry_api.get_industry_info(industry_code)
 
     def build_other_conditions_block(
         self,

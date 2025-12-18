@@ -12,6 +12,8 @@ from app.tools.rule_engine import get_rule_engine, ProcurementRuleEngine
 from app.models.schemas import ExtractedData, ClassificationResult
 from app.tools.template_selector import get_template_selector
 from app.tools.field_mapper import get_field_mapper
+from app.tools.web_crawler import get_crawler_tools
+from app.utils.notice_amount_crawler import get_latest_notice_amount
 
 
 @tool("Rule Engine 분류 도구")
@@ -30,9 +32,20 @@ def rule_engine_classify(extracted_data_json: str) -> str:
         data_dict = json.loads(extracted_data_json)
         
         # 데이터 타입 정규화 (ExtractedData 스키마에 맞게)
-        # qualification_notes가 리스트인 경우 문자열로 변환
-        if "qualification_notes" in data_dict and isinstance(data_dict["qualification_notes"], list):
-            data_dict["qualification_notes"] = "\n".join(str(item) for item in data_dict["qualification_notes"])
+        # qualification_notes가 리스트나 dict인 경우 문자열로 변환
+        if "qualification_notes" in data_dict:
+            if isinstance(data_dict["qualification_notes"], list):
+                data_dict["qualification_notes"] = "\n".join(str(item) for item in data_dict["qualification_notes"])
+            elif isinstance(data_dict["qualification_notes"], dict):
+                # dict인 경우 JSON 문자열로 변환하거나 값들을 조합
+                try:
+                    data_dict["qualification_notes"] = json.dumps(data_dict["qualification_notes"], ensure_ascii=False)
+                except:
+                    # JSON 직렬화 실패 시 키-값 쌍을 문자열로 변환
+                    data_dict["qualification_notes"] = "\n".join(f"{k}: {v}" for k, v in data_dict["qualification_notes"].items())
+            elif not isinstance(data_dict["qualification_notes"], str):
+                # 그 외의 타입이면 문자열로 변환
+                data_dict["qualification_notes"] = str(data_dict["qualification_notes"])
         
         # detail_item_codes와 industry_codes가 문자열인 경우 리스트로 변환
         if "detail_item_codes" in data_dict and isinstance(data_dict["detail_item_codes"], str):
@@ -151,6 +164,54 @@ def field_mapper_tool(template_content: str, extracted_data_json: str) -> str:
         return f"필드 매핑 실패: {str(e)}\n\n원본 템플릿:\n{template_content}"
 
 
+@tool("고시금액 조회 도구")
+def notice_amount_tool(force_refresh: str = "false") -> str:
+    """
+    기획재정부 고시금액을 크롤링하여 조회합니다.
+    
+    고시금액은 2년마다 변경되며, 중소기업 제한 기준으로 사용됩니다.
+    - 1억원 미만: 소기업 제한
+    - 1억원 이상 ~ 고시금액 미만: 중소기업 제한
+    - 고시금액 이상: 중소기업 제한 없음
+    
+    Args:
+        force_refresh: "true"면 캐시 무시하고 강제 새로고침 (기본값: "false")
+    
+    Returns:
+        고시금액 정보 (JSON 문자열)
+        {
+            "notice_amount": 230000000,
+            "formatted": "2억 3천만 원",
+            "source": "기획재정부 고시",
+            "effective_date": "2025. 1. 1."
+        }
+    """
+    try:
+        import json
+        from app.utils.notice_amount_crawler import get_notice_amount_crawler
+        
+        force = force_refresh.lower() == "true"
+        crawler = get_notice_amount_crawler()
+        amount = crawler.get_notice_amount(force_refresh=force)
+        formatted = crawler.format_amount(amount)
+        
+        result = {
+            "notice_amount": amount,
+            "formatted": formatted,
+            "source": "기획재정부 고시 (국가법령정보센터)",
+            "description": "세계무역기구의 정부조달협정상 개방대상금액"
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "error": f"고시금액 조회 실패: {str(e)}",
+            "default_amount": 230000000,
+            "formatted": "2억 3천만 원"
+        }, ensure_ascii=False)
+
+
 def get_classifier_tools():
     """Classifier Agent가 사용할 Tool 목록"""
     return [rule_engine_classify, template_selector_tool]
@@ -163,7 +224,19 @@ def get_generator_tools():
 
 def get_validator_tools():
     """Validator Agent가 사용할 Tool 목록"""
-    # Validator는 웹 검색 도구를 사용할 수 있음
+    # Validator는 웹 검색 및 크롤링 도구를 사용할 수 있음
     from app.tools.web_search import get_web_search, get_law_search
-    return []  # 추후 웹 검색 도구 추가 가능
+    crawler_tools = get_crawler_tools()
+    return crawler_tools + [notice_amount_tool]  # 크롤링 도구 + 고시금액 조회 도구 추가
+
+
+def get_extractor_tools():
+    """Extractor Agent가 사용할 Tool 목록"""
+    # Extractor도 필요시 크롤링 도구 사용 가능
+    return []
+
+
+def get_classifier_tools_with_notice():
+    """Classifier Agent가 사용할 Tool 목록 (고시금액 조회 포함)"""
+    return get_classifier_tools() + [notice_amount_tool]
 

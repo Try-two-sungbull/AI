@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     shared-mime-info \
     # 한글 폰트 (한국어 문서 처리용)
     fonts-nanum \
+    # pdf2image를 위한 poppler-utils
+    poppler-utils \
     # 기타 유틸리티
     git \
     && rm -rf /var/lib/apt/lists/*

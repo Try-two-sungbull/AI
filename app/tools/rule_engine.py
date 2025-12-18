@@ -40,10 +40,10 @@ class ProcurementRuleEngine:
         }
     }
     
-    # 중소기업 제한 기준
+    # 중소기업 제한 기준 (기본값, 크롤링으로 업데이트됨)
     SME_THRESHOLDS = {
-        "소기업_최대": 100_000_000,        # 1억원 미만
-        "중소기업_최대": 230_000_000,      # 2.3억원 미만
+        "소기업_최대": 100_000_000,        # 1억원 미만 (고정)
+        "중소기업_최대": 230_000_000,      # 고시금액 미만 (동적 업데이트)
     }
 
     def __init__(self):
@@ -52,6 +52,8 @@ class ProcurementRuleEngine:
             self._rule_lowest_price,
             self._rule_negotiation
         ]
+        # 고시금액 초기화 (크롤링)
+        self._update_notice_amount()
 
     def classify(self, extracted_data: ExtractedData) -> ClassificationResult:
         """
@@ -195,9 +197,33 @@ class ProcurementRuleEngine:
             return "별표3"
         return None
     
+    def _update_notice_amount(self):
+        """
+        기획재정부 고시금액을 크롤링하여 업데이트
+        
+        공고문 생성 시마다 최신 고시금액을 확인합니다.
+        """
+        try:
+            from app.utils.notice_amount_crawler import get_latest_notice_amount
+            notice_amount = get_latest_notice_amount(force_refresh=False)
+            if notice_amount:
+                self.SME_THRESHOLDS["중소기업_최대"] = notice_amount
+                # 별표2 최소값도 업데이트
+                for proc_type in self.THRESHOLDS:
+                    self.THRESHOLDS[proc_type]["별표2_최소"] = notice_amount
+                print(f"✅ 고시금액 업데이트: {notice_amount:,}원")
+        except Exception as e:
+            print(f"⚠️ 고시금액 크롤링 실패, 기본값 사용: {str(e)}")
+            # 기본값 유지
+    
     def _determine_sme_restriction(self, estimated_price: float) -> str:
         """
         중소기업 제한 결정
+        
+        규칙:
+        - 1억원 미만: 소기업 제한 (구매계획서에 없어도 무조건 적용)
+        - 1억원 이상 ~ 고시금액 미만: 중소기업 제한 (구매계획서에 없어도 무조건 적용)
+        - 고시금액 이상: 중소기업 제한 없음
         
         Args:
             estimated_price: VAT 제외 추정가격
@@ -205,9 +231,14 @@ class ProcurementRuleEngine:
         Returns:
             "소기업_소상공인", "중소기업_소상공인", "없음"
         """
+        # 고시금액 최신화 (매번 확인)
+        self._update_notice_amount()
+        
+        notice_amount = self.SME_THRESHOLDS["중소기업_최대"]
+        
         if estimated_price < self.SME_THRESHOLDS["소기업_최대"]:
             return "소기업_소상공인"
-        elif estimated_price < self.SME_THRESHOLDS["중소기업_최대"]:
+        elif estimated_price < notice_amount:
             return "중소기업_소상공인"
         else:
             return "없음"
