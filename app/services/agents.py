@@ -86,3 +86,31 @@ def create_validator_agent() -> Agent:
     금지: 법령 해석의 최종 결론
     """
     return load_agent("validator")
+
+
+def create_template_comparator_agent() -> Agent:
+    """
+    템플릿 비교 Agent
+
+    역할: 최신 공고문과 기존 템플릿 비교
+    책임:
+    - 두 문서의 구조적 차이 분석
+    - 추가/삭제/변경된 섹션 식별
+    - 변경사항의 중요도 평가
+    금지: 법적 판단, 어느 버전이 "올바른지" 확정
+    """
+    return Agent(
+        role="템플릿 변경사항 분석 전문가",
+        goal="최신 공고문과 기존 템플릿을 비교하여 변경사항을 정확히 식별",
+        backstory="""
+        당신은 입찰 공고문의 구조와 내용을 분석하는 전문가입니다.
+        최신 나라장터 공고문과 우리의 템플릿을 비교하여,
+        어떤 섹션이 추가되었는지, 삭제되었는지, 변경되었는지를 명확히 식별합니다.
+
+        중요: 당신은 "어느 버전이 올바른지" 판단하지 않습니다.
+        단지 두 문서의 차이점을 객관적으로 나열할 뿐입니다.
+        """,
+        llm=get_llm(),
+        verbose=True,
+        allow_delegation=False
+    )

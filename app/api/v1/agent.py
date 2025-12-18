@@ -20,16 +20,64 @@ from datetime import datetime
 import tempfile
 import os
 
+from app.infra.db.database import get_db, engine, Base
 from app.models.agent_state import AgentState
 from app.models.schemas import UserFeedback
 from app.services.crew_service import BiddingDocumentCrew
+from app.services.nara_bid_service import get_latest_bid_notice
 from app.utils.document_parser import parse_document
 from app.utils.document_converter import convert_document
+from app.config import get_settings
+
+from sqlalchemy.orm import Session
+from app.infra.db.models import NoticeTemplate
+
+# 애플리케이션 시작 시 테이블이 없다면 생성
+Base.metadata.create_all(bind=engine)
+
+settings = get_settings()
 
 router = APIRouter()
 
 # 간단한 in-memory 스토리지 (실제론 DB 사용)
 agent_sessions: Dict[str, AgentState] = {}
+
+
+def detect_file_type(content: bytes) -> str:
+    """
+    파일 바이트 시그니처로 파일 타입 감지
+
+    Args:
+        content: 파일 바이트
+
+    Returns:
+        파일 타입 ('pdf', 'hwp', 'docx', 'txt')
+    """
+    if not content or len(content) < 4:
+        return 'txt'
+
+    # PDF: %PDF (0x25 0x50 0x44 0x46)
+    if content[:4] == b'%PDF':
+        return 'pdf'
+
+    # HWP 5.0 이상 (ZIP based): PK (0x50 0x4B)
+    if content[:2] == b'PK':
+        # DOCX도 ZIP이므로 추가 확인 필요
+        if b'HWP Document File' in content[:1024] or b'hwp' in content[:512].lower():
+            return 'hwp'
+        elif b'word/' in content[:1024]:
+            return 'docx'
+        # 기본적으로 ZIP 시그니처면 HWP로 가정 (나라장터에서는 주로 HWP)
+        return 'hwp'
+
+    # HWP 3.0 이하 (OLE based): D0 CF 11 E0
+    if content[:4] == b'\xd0\xcf\x11\xe0':
+        return 'hwp'
+
+    # DOCX (ZIP): PK로 시작하지만 위에서 처리됨
+
+    # 기본값
+    return 'txt'
 
 
 @router.post("/upload")
@@ -370,6 +418,350 @@ async def submit_feedback(feedback: UserFeedback):
     else:
         raise HTTPException(status_code=400, detail="알 수 없는 피드백 유형입니다")
 
+@router.post("/templates/")
+async def save_template(
+    template_type: str,
+    markdown_text: str,
+    db: Session = Depends(get_db),
+):
+    """마크다운 문자열을 그대로 DB에 저장"""
+    new_template = NoticeTemplate(
+        template_type=template_type,
+        content=markdown_text,
+        summary="에이전트에 의해 자동 생성됨",
+    )
+    db.add(new_template)
+    db.commit()
+    db.refresh(new_template)
+    return {"message": "템플릿이 저장되었습니다."}
+
+
+@router.get("/templates/latest")
+async def get_latest_template(
+    template_type: str,
+    db: Session = Depends(get_db),
+):
+    """
+    템플릿 유형(예: '적격심사')을 받아 최신 버전 템플릿을 반환하는 API
+
+    - 같은 template_type 중에서 created_at 기준으로 가장 최근 레코드 1건 조회
+    """
+    latest = (
+        db.query(NoticeTemplate)
+        .filter(NoticeTemplate.template_type == template_type)
+        .order_by(NoticeTemplate.created_at.desc())
+        .first()
+    )
+
+    if not latest:
+        raise HTTPException(
+            status_code=404,
+            detail=f"해당 유형의 템플릿이 없습니다: {template_type}",
+        )
+
+    return {
+        "id": latest.id,
+        "template_type": latest.template_type,
+        "version": latest.version,
+        "summary": latest.summary,
+        "created_at": latest.created_at.isoformat() if latest.created_at else None,
+        "content": latest.content,
+    }
+
+
+@router.post("/templates/load-qualification")
+async def load_qualification_template(db: Session = Depends(get_db)):
+    """
+    `templates/qualification_review.md` 파일을 읽어서 DB에 저장하는 테스트용 API
+
+    - PostgreSQL 연결이 정상인지
+    - 템플릿이 실제로 `notice_templates` 테이블에 들어가는지
+    를 확인하기 위한 엔드포인트입니다.
+    """
+    from pathlib import Path
+
+    # 프로젝트 루트 기준으로 템플릿 파일 경로 계산
+    project_root = Path(__file__).resolve().parents[3]
+    template_path = project_root / "templates" / "qualification_review.md"
+
+    if not template_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"템플릿 파일을 찾을 수 없습니다: {template_path}",
+        )
+
+    markdown_text = template_path.read_text(encoding="utf-8")
+
+    new_template = NoticeTemplate(
+        template_type="적격심사",
+        content=markdown_text,
+        summary="파일에서 로드된 적격심사 기본 템플릿",
+    )
+    db.add(new_template)
+    db.commit()
+    db.refresh(new_template)
+
+    return {
+        "message": "qualification_review.md 템플릿이 저장되었습니다.",
+        "id": new_template.id,
+        "length": len(markdown_text),
+    }
+
+
+@router.get("/trend")
+async def get_latest_notice(
+    days_ago: int = Query(3, description="며칠 전부터 조회할지"),
+    cntrctCnclsMthdNm: Optional[str] = Query(None, description="계약체결방법명 (예: 적격심사)")
+):
+    """
+    최신 나라장터 공고문 URL 조회
+
+    Args:
+        days_ago: 며칠 전부터 조회할지 (기본 3일)
+        cntrctCnclsMthdNm: 계약체결방법명 필터 (선택)
+
+    Returns:
+        공고문 URL (ntceSpecDocUrl1)
+    """
+    try:
+        # 최신 공고의 공고문 URL 조회
+        doc_url = get_latest_bid_notice(days_ago=days_ago, cntrctCnclsMthdNm=cntrctCnclsMthdNm)
+
+        return {
+            "status": "success",
+            "doc_url": doc_url,
+            "message": "최신 공고문 URL 조회 완료"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"공고문 조회 실패: {str(e)}")
+
+
+@router.post("/validate-template")
+async def validate_template(
+    cntrctCnclsMthdNm: str = Query(..., description="공고 유형 (예: 적격심사, 소액수의)"),
+    days_ago: int = Query(7, description="며칠 전부터 조회할지 (기본 7일)"),
+    db: Session = Depends(get_db),
+):
+    """
+    템플릿 검증 API
+
+    1. 나라장터에서 해당 유형의 최신 공고문 조회
+    2. 우리 템플릿 로드
+    3. 비교 Agent로 차이점 분석
+    4. 변경사항 있으면 신버전 템플릿 반환
+
+    Args:
+        cntrctCnclsMthdNm: 공고 유형 (적격심사, 소액수의 등)
+        days_ago: 조회 기간 (기본 7일)
+    """
+    try:
+        # 1. 최신 공고문 URL 여러 개 조회
+        num_samples = 3  # 비교할 샘플 개수
+        print(f"📥 최신 공고문 {num_samples}개 조회 중... (유형: {cntrctCnclsMthdNm}, 기간: {days_ago}일)")
+        doc_urls = get_latest_bid_notice(days_ago=days_ago, cntrctCnclsMthdNm=cntrctCnclsMthdNm, limit=num_samples)
+
+        # 단일 URL이면 리스트로 변환
+        if isinstance(doc_urls, str):
+            doc_urls = [doc_urls]
+
+        # 2. 모든 공고문 다운로드 및 파싱
+        import requests
+        latest_docs = []
+        for idx, doc_url in enumerate(doc_urls, 1):
+            print(f"📄 공고문 {idx}/{len(doc_urls)} 다운로드 중: {doc_url}")
+            try:
+                response = requests.get(doc_url, timeout=30)
+                response.raise_for_status()
+
+                # 파일 타입 감지
+                file_content = response.content
+                file_type = detect_file_type(file_content)
+
+                # 파싱
+                doc_content = parse_document(file_content, f"latest_notice_{idx}.{file_type}")
+                latest_docs.append({
+                    "url": doc_url,
+                    "content": doc_content,
+                    "index": idx
+                })
+                print(f"✅ 공고문 {idx} 파싱 완료 (형식: {file_type}, 길이: {len(doc_content)}자)")
+            except Exception as e:
+                print(f"⚠️ 공고문 {idx} 다운로드 실패: {str(e)}")
+                continue
+
+        if not latest_docs:
+            raise HTTPException(status_code=500, detail="모든 공고문 다운로드 실패")
+
+        print(f"✅ 총 {len(latest_docs)}개 공고문 파싱 완료")
+
+        # 3. 우리 템플릿 로드
+        from app.tools.template_selector import get_template_selector
+        from app.models.schemas import ClassificationResult
+
+        template_selector = get_template_selector()
+
+        # 공고 유형을 ClassificationResult로 변환
+        classification_result = ClassificationResult(
+            recommended_type=cntrctCnclsMthdNm,
+            confidence=1.0,
+            reason="템플릿 검증용",
+            alternative_types=[]
+        )
+
+        template = template_selector.select_template(classification_result, preferred_format="md")
+        our_template_content = template.content
+        print(f"✅ 템플릿 로드 완료: {template.template_id}")
+
+        # 4. Agent로 여러 공고문 비교
+        from app.services.agents import create_template_comparator_agent
+        from app.services.tasks import create_multi_template_comparison_task
+        from crewai import Crew, Process
+
+        comparator = create_template_comparator_agent()
+        comparison_task = create_multi_template_comparison_task(
+            comparator,
+            latest_docs,  # 여러 공고문 전달
+            our_template_content
+        )
+
+        crew = Crew(
+            agents=[comparator],
+            tasks=[comparison_task],
+            process=Process.sequential,
+            verbose=True
+        )
+
+        print("🔍 템플릿 비교 중...")
+        result = crew.kickoff()
+
+        # 5. 결과 파싱
+        result_str = str(result)
+        print(f"🔍 Agent 응답 길이: {len(result_str)}자")
+
+        try:
+            comparison_result = json.loads(result_str)
+            print("✅ 직접 JSON 파싱 성공")
+        except json.JSONDecodeError as e:
+            print(f"⚠️ 직접 JSON 파싱 실패: {str(e)}")
+            # JSON 파싱 실패 시 텍스트에서 JSON 추출 시도
+            import re
+
+            # 여러 패턴 시도 (전체 텍스트에서)
+            patterns = [
+                r'```json\s*(\{[\s\S]*\})\s*```',  # ```json {...} ``` (전체)
+                r'```\s*(\{[\s\S]*\})\s*```',      # ``` {...} ``` (전체)
+                r'(\{[\s\S]*\})',                   # { ... } (가장 큰 JSON)
+            ]
+
+            for pattern in patterns:
+                json_match = re.search(pattern, result_str)
+                if json_match:
+                    try:
+                        json_text = json_match.group(1)
+                        print(f"📝 패턴 매칭, JSON 길이: {len(json_text)}자")
+
+                        # JSON 안의 줄바꿈 문제 해결: Python의 literal_eval 시도
+                        # 또는 수동으로 파싱
+                        try:
+                            comparison_result = json.loads(json_text)
+                        except json.JSONDecodeError:
+                            # JSON5 스타일로 재시도 (따옴표 없는 줄바꿈 처리)
+                            # updated_template 필드를 별도로 추출
+                            template_match = re.search(r'"updated_template":\s*"([\s\S]*?)"(?=\s*[,}])', json_text)
+                            if template_match:
+                                # updated_template 제거하고 나머지만 파싱
+                                json_without_template = re.sub(
+                                    r'"updated_template":\s*"[\s\S]*?"(?=\s*[,}])',
+                                    '"updated_template": "PLACEHOLDER"',
+                                    json_text
+                                )
+                                comparison_result = json.loads(json_without_template)
+                                # 실제 템플릿 내용을 다시 넣기
+                                comparison_result["updated_template"] = template_match.group(1)
+                            else:
+                                raise
+
+                        print("✅ JSON 추출 및 파싱 성공")
+                        break
+                    except json.JSONDecodeError as parse_error:
+                        print(f"⚠️ 패턴 매칭 후 파싱 실패: {str(parse_error)}")
+                        continue
+            else:
+                # 모든 패턴 실패
+                print(f"❌ 모든 JSON 추출 패턴 실패")
+                print(f"🔍 응답 앞 500자: {result_str[:500]}")
+                comparison_result = {
+                    "error": "JSON 파싱 실패",
+                    "raw_output": result_str[:2000],
+                    "has_changes": False
+                }
+
+        # 6. 업데이트된 템플릿을 DB에 저장 (변경사항이 있을 때만)
+        new_template_row = None
+        if comparison_result.get("has_changes"):
+            updated_template = comparison_result.get("updated_template", "")
+            if updated_template:
+                # JSON 이스케이프 문자 해제 (\\n → 실제 줄바꿈)
+                updated_template = updated_template.replace("\\n", "\n")
+                updated_template = updated_template.replace("\\t", "\t")
+                updated_template = updated_template.replace('\\"', '"')
+
+                # 이전 버전 조회 (있으면 버전 넘버 증가용)
+                latest_existing = (
+                    db.query(NoticeTemplate)
+                    .filter(NoticeTemplate.template_type == cntrctCnclsMthdNm)
+                    .order_by(NoticeTemplate.created_at.desc())
+                    .first()
+                )
+
+                # 간단한 버전 증가 로직: "1.0.0" → "1.0.1" 식으로 patch만 +1
+                new_version = "1.0.0"
+                if latest_existing and latest_existing.version:
+                    parts = latest_existing.version.split(".")
+                    if len(parts) == 3 and parts[2].isdigit():
+                        parts[2] = str(int(parts[2]) + 1)
+                        new_version = ".".join(parts)
+                    else:
+                        # 형식이 다르면 그대로 사용
+                        new_version = latest_existing.version
+
+                summary = comparison_result.get("summary", "자동 검증 결과에 따른 업데이트 템플릿")
+
+                new_template_row = NoticeTemplate(
+                    template_type=cntrctCnclsMthdNm,
+                    version=new_version,
+                    content=updated_template,
+                    summary=summary[:255] if summary else None,
+                )
+                db.add(new_template_row)
+                db.commit()
+                db.refresh(new_template_row)
+
+                print(
+                    f"✅ 업데이트된 템플릿을 DB에 저장: id={new_template_row.id}, "
+                    f"type={new_template_row.template_type}, version={new_template_row.version}"
+                )
+
+        # 7. 응답 생성 (변경점 및 저장 결과 반환)
+        response_data = {
+            "status": "unchanged" if not comparison_result.get("has_changes") else "changed",
+            "template_type": cntrctCnclsMthdNm,
+            "changes_detected": comparison_result.get("has_changes", False),
+            "summary": comparison_result.get("summary", ""),
+            "changes": comparison_result.get("changes", []),
+            "saved_template": {
+                "id": new_template_row.id,
+                "version": new_template_row.version,
+                "created_at": new_template_row.created_at.isoformat() if new_template_row and new_template_row.created_at else None,
+            } if new_template_row else None,
+        }
+
+        return response_data
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"템플릿 검증 실패: {str(e)}")
 
 # 헬퍼 함수들
 

@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 from pydantic import field_validator
 from functools import lru_cache
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
@@ -42,11 +43,11 @@ class Settings(BaseSettings):
     # External APIs
     law_api_base_url: str = "https://www.law.go.kr/DRF"
     law_api_key: str = ""
-    
+
     # 공공데이터포탈 API (업종코드 조회)
     data_go_kr_base_url: str = "https://apis.data.go.kr/1230000/ao/IndstrytyBaseLawrgltInfoService/getIndstrytyBaseLawrgltInfoList"
     data_go_kr_service_key: str = ""
-    
+
     # 기획재정부 고시금액 (중소기업 제한 기준)
     # 선택적 오버라이드용 (테스트/특수 상황에서만 사용)
     # 기본값은 코드에 하드코딩되어 있으며, 크롤링으로 자동 확인됨
@@ -71,6 +72,9 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         # .env 파일을 명시적으로 로드
         case_sensitive = False
+        extra = "allow"  # 추가 필드 허용
+
+
 
 
 @lru_cache()

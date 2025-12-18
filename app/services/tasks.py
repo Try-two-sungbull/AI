@@ -296,3 +296,221 @@ def create_revision_task(
         agent=agent,
         expected_output="수정된 공고문 (제시된 이슈만 반영, 나머지 전체 유지, 모든 섹션 포함)"
     )
+
+
+def create_multi_template_comparison_task(
+    agent,
+    latest_docs: list,
+    our_template_content: str
+) -> Task:
+    """
+    여러 최신 공고문과 우리 템플릿 비교 Task
+
+    Input:
+        - latest_docs: [{"url": "...", "content": "...", "index": 1}, ...]
+        - our_template_content: 우리 템플릿 내용
+
+    Output: 변경사항 JSON
+    """
+    # 공고문들을 텍스트로 결합
+    docs_text = ""
+    for doc in latest_docs:
+        docs_text += f"\n\n### 공고문 #{doc['index']}\n```\n{doc['content'][:3000]}\n```\n"  # 각 문서 3000자 제한
+
+    return Task(
+        description=f"""
+        최신 나라장터 공고문 **{len(latest_docs)}개**와 우리 템플릿을 비교하여 변경사항을 분석하세요.
+
+        ## 최신 공고문들 (나라장터)
+        {docs_text}
+
+        ## 우리 템플릿
+        ```
+        {our_template_content[:5000]}
+        ```
+
+        ---
+
+        ## 분석 지침
+
+        1. **공통 패턴 찾기**
+           - {len(latest_docs)}개 공고문에서 **공통적으로 나타나는** 섹션과 내용 식별
+           - 2개 이상의 공고문에 있으면 "표준"으로 간주
+
+        2. **구조 비교**
+           - 섹션 구성이 같은지 확인
+           - 섹션 번호가 바뀌었는지 확인
+
+        3. **내용 비교**
+           - 각 섹션의 텍스트가 달라진 부분 찾기
+           - **여러 공고문에 공통적으로 있는데 우리 템플릿에 없는 것** → `added`
+           - **우리 템플릿에만 있고 공고문들에 없는 것** → `removed`
+           - **둘 다 있지만 표현이 다른 것** → `modified`
+
+        4. **중요도 평가**
+           - `high`: 필수 섹션 추가/삭제, 법령 관련 변경
+           - `medium`: 표현 방식 변경, 순서 변경
+           - `low`: 띄어쓰기, 구두점 등 사소한 변경
+
+        ---
+
+        ## 출력 형식 (JSON)
+
+        ⚠️ **CRITICAL**: `updated_template` 필드는 **절대 축약하지 말고 전체 템플릿을 완전히 작성**하세요!
+
+        ```json
+        {{
+            "has_changes": true,
+            "summary": "섹션 2개 추가, 1개 변경됨",
+            "changes": [
+                {{
+                    "section": "## 5. 예정가격 및 낙찰자 결정방법",
+                    "type": "modified",
+                    "severity": "high",
+                    "old_text": "예정가격 이하로 입찰한 자",
+                    "new_text": "예정가격 범위 내에서 입찰한 자",
+                    "reason": "법령 표현 변경 (공고문 {len(latest_docs)}개 모두 동일)",
+                    "frequency": "{len(latest_docs)}/{len(latest_docs)}"
+                }},
+                {{
+                    "section": "## 11. 청렴계약 이행 서약",
+                    "type": "added",
+                    "severity": "high",
+                    "new_text": "청렴계약 이행 서약서를 제출해야 합니다.",
+                    "reason": "신규 섹션 추가 (공고문 {len(latest_docs)}개 중 {len(latest_docs)}개에 존재)",
+                    "frequency": "{len(latest_docs)}/{len(latest_docs)}"
+                }}
+            ],
+            "new_version_recommended": true,
+            "updated_template": "(여기에 우리 템플릿 전체를 복사하고 changes만 적용한 완전한 마크다운 - 절대 축약 금지!)"
+        }}
+        ```
+
+        **필수 요구사항**:
+        - `frequency` 필드에 "몇 개 공고문 중 몇 개에 나타났는지" 표시
+        - 최소 2개 이상의 공고문에 나타난 변경사항만 포함
+        - **`updated_template` 필드는 반드시 완전한 마크다운 템플릿 전체를 포함**
+          - ❌ "...", "(생략)", "(계속...)" 같은 축약 **절대 금지**
+          - ✅ 모든 섹션 (## 1. ~ ## 마지막 섹션)을 전부 포함
+          - ✅ 우리 템플릿을 기반으로 changes만 적용한 완전한 문서
+        - {{변수명}} 플레이스홀더는 그대로 유지
+
+        ---
+
+        ## 중요 사항
+
+        - 변경사항이 없으면 `has_changes: false`로 반환
+        - 사소한 띄어쓰기 차이는 무시
+        - {{변수명}} 같은 플레이스홀더는 무시
+        - **여러 공고문에서 일관되게 나타나는 변경**에만 집중
+        - 법령 관련 표현 변경은 severity를 high로 설정
+        """,
+        agent=agent,
+        expected_output="JSON 형식의 변경사항 분석 결과 (여러 공고문 기준)"
+    )
+
+
+def create_template_comparison_task(
+    agent,
+    latest_doc_content: str,
+    our_template_content: str
+) -> Task:
+    """
+    템플릿 비교 Task
+
+    최신 공고문과 우리 템플릿을 비교하여 변경사항 추출
+
+    Input:
+        - latest_doc_content: 최신 나라장터 공고문 내용
+        - our_template_content: 우리 템플릿 내용
+
+    Output: 변경사항 JSON
+    """
+    import json
+
+    return Task(
+        description=f"""
+        최신 나라장터 공고문과 우리 템플릿을 비교하여 변경사항을 분석하세요.
+
+        ## 최신 공고문 (나라장터)
+        ```
+        {latest_doc_content[:5000]}  # 너무 길면 5000자로 제한
+        ```
+
+        ## 우리 템플릿
+        ```
+        {our_template_content[:5000]}  # 너무 길면 5000자로 제한
+        ```
+
+        ---
+
+        ## 분석 지침
+
+        1. **구조 비교**
+           - 섹션 구성이 같은지 확인 (예: "## 1. 사업명", "## 2. 견적방식" 등)
+           - 섹션 번호가 바뀌었는지 확인
+
+        2. **내용 비교**
+           - 각 섹션의 텍스트가 달라진 부분 찾기
+           - 추가된 문장, 삭제된 문장, 변경된 문장 식별
+
+        3. **변경 유형 분류**
+           - `added`: 최신 공고문에만 있는 내용
+           - `removed`: 우리 템플릿에만 있는 내용
+           - `modified`: 둘 다 있지만 내용이 다른 부분
+
+        4. **중요도 평가**
+           - `high`: 필수 섹션 추가/삭제, 법령 관련 변경
+           - `medium`: 표현 방식 변경, 순서 변경
+           - `low`: 띄어쓰기, 구두점 등 사소한 변경
+
+        ---
+
+        ## 출력 형식 (JSON)
+
+        ```json
+        {{
+            "has_changes": true,
+            "summary": "섹션 2개 추가, 1개 변경됨",
+            "changes": [
+                {{
+                    "section": "## 5. 예정가격 및 낙찰자 결정방법",
+                    "type": "modified",
+                    "severity": "high",
+                    "old_text": "예정가격 이하로 입찰한 자",
+                    "new_text": "예정가격 범위 내에서 입찰한 자",
+                    "reason": "법령 표현 변경"
+                }},
+                {{
+                    "section": "## 11. 청렴계약 이행 서약",
+                    "type": "added",
+                    "severity": "high",
+                    "new_text": "청렴계약 이행 서약서를 제출해야 합니다.",
+                    "reason": "신규 섹션 추가"
+                }}
+            ],
+            "new_version_recommended": true,
+            "updated_template": "# 입찰공고\\n\\n## 1. 입찰에 부치는 사항\\n...\\n\\n## 11. 청렴계약 이행 서약\\n\\n청렴계약 이행 서약서를 제출해야 합니다.\\n..."
+        }}
+        ```
+
+        **중요**: `updated_template` 필드에 변경사항을 반영한 완전한 마크다운 템플릿을 포함하세요.
+        - 우리 템플릿을 기반으로 함
+        - `added` 항목은 해당 섹션에 추가
+        - `modified` 항목은 해당 부분을 new_text로 교체
+        - `removed` 항목은 해당 섹션 삭제
+        - {{변수명}} 플레이스홀더는 그대로 유지
+        ```
+
+        ---
+
+        ## 중요 사항
+
+        - 변경사항이 없으면 `has_changes: false`로 반환
+        - 사소한 띄어쓰기 차이는 무시
+        - {{변수명}} 같은 플레이스홀더는 무시
+        - 법령 관련 표현 변경은 severity를 high로 설정
+        """,
+        agent=agent,
+        expected_output="JSON 형식의 변경사항 분석 결과"
+    )

@@ -2,11 +2,15 @@
 문서 변환 유틸리티
 
 마크다운 형식의 공고문을 PDF, DOCX, HWP 형식으로 변환
+HWP → PDF 변환 지원 (LibreOffice 사용)
 """
 
 from typing import Optional
 import io
 import re
+import os
+import tempfile
+import subprocess
 from pathlib import Path
 
 try:
@@ -296,4 +300,92 @@ def export_to_file(
     output_path = Path(filename)
     convert_document(markdown_content, output_format, str(output_path))
     return str(output_path)
+
+
+def hwp_to_pdf(hwp_content: bytes) -> bytes:
+    """
+    HWP 파일을 PDF로 변환 (LibreOffice 사용)
+
+    Args:
+        hwp_content: HWP 파일 바이트
+
+    Returns:
+        PDF 파일 바이트
+
+    Raises:
+        RuntimeError: LibreOffice가 설치되지 않았거나 변환 실패
+    """
+    # LibreOffice 경로 확인
+    soffice_paths = [
+        "/opt/homebrew/bin/soffice",  # macOS Homebrew
+        "/usr/local/bin/soffice",      # macOS
+        "/usr/bin/soffice",            # Linux
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice"  # macOS app
+    ]
+
+    soffice_path = None
+    for path in soffice_paths:
+        if os.path.exists(path):
+            soffice_path = path
+            break
+
+    if not soffice_path:
+        raise RuntimeError(
+            "LibreOffice가 설치되지 않았습니다. "
+            "설치: brew install --cask libreoffice"
+        )
+
+    # 임시 디렉토리 생성
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # HWP 파일 저장
+        hwp_path = os.path.join(temp_dir, "input.hwp")
+        with open(hwp_path, "wb") as f:
+            f.write(hwp_content)
+
+        # LibreOffice로 PDF 변환
+        try:
+            result = subprocess.run(
+                [
+                    soffice_path,
+                    "--headless",
+                    "--convert-to", "pdf",
+                    "--outdir", temp_dir,
+                    hwp_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60  # 60초 타임아웃
+            )
+
+            # 디버깅: 출력 확인
+            print(f"🔍 LibreOffice 실행 결과:")
+            print(f"  Return code: {result.returncode}")
+            print(f"  STDOUT: {result.stdout}")
+            print(f"  STDERR: {result.stderr}")
+
+            # 생성된 파일 목록 확인
+            generated_files = os.listdir(temp_dir)
+            print(f"  생성된 파일들: {generated_files}")
+
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"HWP → PDF 변환 실패 (exit code {result.returncode}): {result.stderr or result.stdout}"
+                )
+
+            # 변환된 PDF 파일 읽기
+            pdf_path = os.path.join(temp_dir, "input.pdf")
+            if not os.path.exists(pdf_path):
+                raise RuntimeError(
+                    f"PDF 파일이 생성되지 않았습니다. 생성된 파일: {generated_files}"
+                )
+
+            with open(pdf_path, "rb") as f:
+                pdf_content = f.read()
+
+            return pdf_content
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("HWP → PDF 변환 시간 초과 (60초)")
+        except Exception as e:
+            raise RuntimeError(f"HWP → PDF 변환 중 오류: {str(e)}")
 
