@@ -75,7 +75,8 @@ class ProcurementRuleEngine:
         proc_type = extracted_data.procurement_type
 
         # 1차 분기: 공고 방식 결정 (Rule Engine 기반)
-        contract_method = self._determine_contract_method(estimated_price_exc_vat, proc_type)
+        # 제한경쟁입찰 등 특수 케이스 먼저 확인
+        contract_method = self._determine_contract_method(estimated_price_exc_vat, proc_type, extracted_data)
         
         # 적격심사인 경우 별표 결정
         applied_annex = None
@@ -157,7 +158,8 @@ class ProcurementRuleEngine:
     def _determine_contract_method(
         self,
         estimated_price: float,
-        proc_type: str
+        proc_type: str,
+        extracted_data: ExtractedData = None
     ) -> str:
         """
         1차 분기: 공고 방식 결정
@@ -165,10 +167,22 @@ class ProcurementRuleEngine:
         Args:
             estimated_price: VAT 제외 추정가격
             proc_type: 조달 유형
+            extracted_data: 추출된 데이터 (선택적, 제한경쟁입찰 등 특수 케이스 확인용)
         
         Returns:
             "소액수의" 또는 "적격심사"
         """
+        # 제한경쟁입찰 등 특수 케이스 처리
+        # 제한경쟁입찰은 적격심사 방식입니다 (중소기업 간 제한경쟁입찰)
+        if extracted_data and extracted_data.procurement_method_raw:
+            procurement_method_raw = extracted_data.procurement_method_raw.lower()
+            # 제한경쟁입찰은 적격심사로 분류
+            if "제한경쟁" in procurement_method_raw or "제한경쟁입찰" in procurement_method_raw:
+                return "적격심사"
+            # 일반경쟁입찰, 공개입찰 등도 적격심사
+            if "경쟁입찰" in procurement_method_raw and "소액수의" not in procurement_method_raw:
+                return "적격심사"
+        
         if proc_type not in self.THRESHOLDS:
             return "적격심사"  # 기본값
         
