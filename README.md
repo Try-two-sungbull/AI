@@ -1,305 +1,88 @@
-# AI Bidding Document Agent
+# 한국환경공단 입찰공고문 자동생성 서비스
 
-CrewAI 기반 입찰 공고문 자동 작성 에이전트
+## 1. 프로젝트 소개
 
-## 프로젝트 개요
+`한국환경공단 입찰공고문 자동생성 서비스`는 입찰 관련 문서를 다루는 FastAPI 기반 프로젝트입니다.
 
-본 프로젝트는 **에이전트 해커톤 제출용** FastAPI 기반 AI 입찰 공고문 자동 작성 시스템입니다.
+현재 저장소에는 문서 추출, 공고 유형 분류, 템플릿 검증, 문서 생성, 문서 변환 관련 API와 서비스 코드가 포함되어 있습니다.
 
-### 핵심 철학
+## 2. 기획 배경
 
-이 시스템은 Claude를 **법적 판단 주체가 아닌, 문서 이해·비교·재작성·제안 역할을 수행하는 서브 에이전트**로 활용합니다.
+입찰 공고문 작성 과정에는 반복적인 문서 확인과 템플릿 수정 작업이 포함됩니다.  
+이 프로젝트는 그 과정 중 일부를 AI와 규칙 기반 로직으로 처리하는 구조로 작성되어 있습니다.
 
-**Agent Loop**: Observe → Decide → Act → Validate → Iterate
+코드상으로도 발주 문서 파싱, 추출 결과 구조화, 분류, 템플릿 비교, 초안 생성 흐름이 각각 분리되어 있습니다.
 
-## 기술 스택
+## 3. 해결하고자 한 문제
 
-| 구분 | 내용 |
-|------|------|
-| Backend | FastAPI (Python 3.10+) |
-| AI Framework | CrewAI 0.28.0 |
-| LLM | Claude 3.5 Sonnet |
-| Agent State | Pydantic 기반 상태 모델 |
-| Parsing | pypdf, python-docx |
-| RAG | 국가법령정보센터 API (선택) |
+- PDF, DOCX, HWP 문서에서 필요한 정보를 추출하는 반복 작업
+- 추출된 정보를 바탕으로 공고 유형을 분류하는 작업
+- 최신 공고문과 기존 템플릿의 차이를 비교하는 작업
+- 템플릿과 추출 데이터를 결합해 초안을 만드는 작업
+- 생성 결과를 PDF, DOCX, HWP로 변환하는 후처리 작업
 
-## 설치 방법
+## 4. 서비스 목표
 
-### 방법 1: Docker 사용 (권장)
+- 입력 문서에서 핵심 정보를 추출한다.
+- 추출 결과를 기반으로 공고 유형을 분류한다.
+- 템플릿 검증과 문서 생성 흐름을 구성한다.
+- 생성 결과를 다른 문서 형식으로 변환하는 경로를 둔다.
 
-#### 1. 저장소 클론
+## 5. 주요 기능
 
-```bash
-git clone <repository-url>
-cd AI
-```
+- `POST /api/v1/agent/extract`
+  - 업로드 파일을 받아 추출 단계를 실행합니다.
+- `POST /api/v1/agent/classify`
+  - 추출과 분류 단계를 실행합니다.
+- `POST /api/v1/agent/validate-template`
+  - 템플릿 검증 흐름을 실행합니다.
+- `POST /api/v1/agent/upload`
+  - 추출 데이터와 분류 결과를 받아 문서를 생성합니다.
+- `POST /api/v1/agent/generate`
+  - 추출 데이터를 받아 문서를 생성합니다.
+- `POST /api/v1/agent/convert-html`
+  - HTML 변환을 수행합니다.
+- 템플릿 관련 엔드포인트
+  - `/api/v1/agent/templates/`, `/latest`, `/retrieve`, `/{template_id}` 라우트가 있습니다.
 
-#### 2. 환경 변수 설정
+## 6. 서비스 흐름
 
-```bash
-cp .env.example .env
-```
+현재 코드 기준 핵심 흐름은 아래와 같습니다.
 
-`.env` 파일을 열어 API 키 설정:
+1. 문서를 업로드해 추출 단계를 실행합니다.
+2. 추출 결과를 바탕으로 분류 단계를 실행합니다.
+3. 템플릿 검증 흐름을 별도로 실행할 수 있습니다.
+4. 분류 결과와 템플릿 ID를 사용해 문서를 생성합니다.
+5. HTML 또는 생성 결과를 다른 형식으로 변환하는 경로가 있습니다.
 
-```env
-ANTHROPIC_API_KEY=your_actual_claude_api_key_here
-SECRET_KEY=your_secret_key_here
-```
+세션 상태 조회, 재실행, 피드백 반영용 엔드포인트도 별도로 구현되어 있습니다.
 
-#### 3. Docker Compose로 실행
+## 7. 기술 스택
 
-```bash
-docker-compose up --build
-```
+| 구분 | 사용 기술 |
+|------|-----------|
+| Backend | FastAPI, Uvicorn |
+| Language | Python 3.10 |
+| AI Orchestration | CrewAI, crewai-tools |
+| LLM 연동 | OpenAI, Anthropic, langchain-openai, langchain-anthropic |
+| 데이터 모델 | Pydantic, pydantic-settings |
+| DB | SQLAlchemy, PostgreSQL |
+| 문서 파싱 | pypdf, pdfplumber, python-docx, olefile, PyMuPDF |
+| 문서 변환 | WeasyPrint, htmldocx, LibreOffice |
+| 배포/실행 | Docker, Docker Compose |
 
-서버가 `http://localhost:8000` 에서 실행됩니다.
+## 8. AI 활용 방식
 
-#### 4. 종료
+코드 기준 AI 활용 방식은 다음과 같습니다.
 
-```bash
-docker-compose down
-```
+- `Extractor Agent`
+  - 문서에서 핵심 정보를 추출합니다.
+- `Classifier Agent`
+  - 추출 결과를 바탕으로 공고 유형 분류를 수행합니다.
+- `Generator Agent`
+  - 템플릿 기반 문서 생성을 담당합니다.
+- `Validator Agent`
+  - 검토 및 보조 판단 역할로 사용됩니다.
 
----
-
-### 방법 2: 로컬 환경 설치
-
-#### 1. 저장소 클론
-
-```bash
-git clone <repository-url>
-cd AI
-```
-
-#### 2. 가상환경 생성 및 활성화
-
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-```
-
-#### 3. 의존성 설치
-
-```bash
-pip install -r requirements.txt
-```
-
-#### 4. 환경 변수 설정
-
-```bash
-cp .env.example .env
-```
-
-`.env` 파일을 열어 다음 값을 설정:
-
-```env
-ANTHROPIC_API_KEY=your_actual_claude_api_key_here
-SECRET_KEY=your_secret_key_here
-```
-
-### 5. 서버 실행
-
-```bash
-uvicorn app.main:app --reload
-```
-
-또는
-
-```bash
-python -m app.main
-```
-
-서버가 `http://localhost:8000` 에서 실행됩니다.
-
-## API 문서
-
-서버 실행 후 다음 URL에서 API 문서를 확인할 수 있습니다:
-
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## 빠른 사용법
-
-### 파일 업로드 및 공고문 생성
-
-```python
-import requests
-
-# PDF 또는 HWP 파일 업로드
-url = "http://localhost:8000/api/v1/agent/upload"
-with open("구매계획서.pdf", "rb") as f:
-    files = {"file": f}
-    response = requests.post(url, files=files)
-
-result = response.json()
-print(result["document"])  # 생성된 공고문
-```
-
-**자세한 사용법**: `USAGE_GUIDE.md` 참고
-
-## 주요 엔드포인트
-
-### 1. POST /api/v1/agent/upload
-
-문서 업로드 및 세션 생성
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/agent/upload" \
-  -F "file=@your_document.pdf"
-```
-
-### 2. POST /api/v1/agent/run
-
-Agent Loop 실행
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/agent/run?session_id=YOUR_SESSION_ID"
-```
-
-### 3. GET /api/v1/agent/state/{session_id}
-
-현재 상태 조회
-
-```bash
-curl -X GET "http://localhost:8000/api/v1/agent/state/YOUR_SESSION_ID"
-```
-
-### 4. POST /api/v1/agent/feedback
-
-사용자 피드백 제출
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/agent/feedback" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "YOUR_SESSION_ID",
-    "feedback_type": "approve",
-    "comments": "승인합니다"
-  }'
-```
-
-## CrewAI 에이전트 구조
-
-### Agents
-
-1. **Document Extractor Agent** - 발주계획서에서 핵심 정보 추출
-2. **Classification Agent** - 공고 유형 분류 및 추천
-3. **Generator Agent** - 공고문 초안 생성
-4. **Validator Agent** - 법령 검증 및 수정 제안
-
-### Agent Loop 흐름
-
-```
-STEP 1: 문서 업로드 → 텍스트 추출
-         ↓
-STEP 2: 핵심 정보 추출 (Extractor Agent)
-         ↓
-STEP 3: 공고 유형 분류 (Classifier Agent)
-         ↓ (신뢰도 < 0.6 → 사용자 확인)
-STEP 4: 공고문 초안 생성 (Generator Agent)
-         ↓
-STEP 5: 법령 검증 (Validator Agent)
-         ↓
-STEP 6: Agent Decision Policy
-         - 이슈 없음 → 완료
-         - 재시도 가능 → 수정 후 재검증
-         - 재시도 한계 → 사람 개입 요청
-```
-
-## Agent Decision Policy
-
-```python
-IF issues.length == 0:
-    state = complete
-ELSE IF retry_count < 2:
-    apply suggestions
-    retry_count += 1
-    state = revise
-ELSE:
-    escalate to human
-```
-
-## 프로젝트 구조
-
-```
-AI/
-├── app/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI 메인 앱
-│   ├── config.py            # 설정
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── agent_state.py   # Agent 상태 모델
-│   │   └── schemas.py       # Pydantic 스키마
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── agents.py        # CrewAI Agents 정의
-│   │   ├── tasks.py         # CrewAI Tasks 정의
-│   │   └── crew_service.py  # Crew 오케스트레이션
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── v1/
-│   │       ├── __init__.py
-│   │       └── agent.py     # API 엔드포인트
-│   └── utils/
-│       ├── __init__.py
-│       └── document_parser.py  # 문서 파싱
-├── templates/
-│   └── sample_template.json
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── CLAUDE.md               # 개발 명세서
-└── README.md
-```
-
-## 해커톤 어필 포인트
-
-1. **법적 책임 분리**: Claude를 판단 주체가 아닌 협력 에이전트로 제한
-2. **Agent State 기반 반복 실행**: Pydantic 기반 상태 관리
-3. **CrewAI 프레임워크 활용**: 멀티 에이전트 협업 구조
-4. **공공 도메인 특화**: 입찰 공고문 자동화에 최적화
-5. **투명한 의사결정**: 신뢰도 점수 및 재시도 정책 명시
-
-## 개발 가이드
-
-### 새로운 Agent 추가
-
-`app/services/agents.py`에 새 함수 추가:
-
-```python
-def create_my_new_agent() -> Agent:
-    return Agent(
-        role="역할",
-        goal="목표",
-        backstory="배경",
-        llm=get_llm(),
-        verbose=True
-    )
-```
-
-### 새로운 Task 추가
-
-`app/services/tasks.py`에 새 함수 추가:
-
-```python
-def create_my_new_task(agent, input_data) -> Task:
-    return Task(
-        description="작업 설명",
-        agent=agent,
-        expected_output="예상 출력"
-    )
-```
-
-## 라이선스
-
-MIT License
-
-## 기여
-
-이슈 및 PR 환영합니다!
-
-## 문의
-
-프로젝트 관련 문의: [이메일 또는 이슈 페이지]
+`crew_service.py`에서는 추출, 분류, 생성, 검증 단계를 순차적으로 실행하는 구조를 사용합니다.  
+추출 단계에서는 Claude 기반 추출을 먼저 수행하고, 누락 필드가 있으면 OpenAI 기반 추출을 추가로 수행한 뒤 결과를 통합하도록 구현되어 있습니다.
